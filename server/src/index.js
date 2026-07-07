@@ -4,6 +4,7 @@ import menuRoutes from "./menu/menu.routes.js";
 import inventoryRoutes from "./inventory/inventory.routes.js";
 import expensesRoutes from "./expenses/expenses.routes.js";
 import employeeRoutes from "./employees/employees.routes.js";
+import posRoutes from "./pos/pos.routes.js";
 
 const app = express();
 
@@ -25,5 +26,6 @@ app.use("/api", menuRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/expenses", expensesRoutes);
 app.use("/api/employees", employeeRoutes);
+app.use("/api/pos", posRoutes);
 
 export default app;

@@ -123,6 +123,7 @@ model MenuItem {
   updatedAt DateTime @updatedAt
 
   recipeIngredients RecipeIngredient[]
+  orderItems        OrderItem[]
 
   @@map("menu_items")
 }
@@ -777,6 +778,9 @@ model Employee {
   salaryExpenses   SalaryExpense[]   @relation("SalaryExpensesByEmployee")
   expenseAuditLogs ExpenseAuditLog[] @relation("ExpenseAuditLogsByEmployee")
 
+  ordersAsWaiter    Order[]         @relation("OrdersByWaiter")
+  discountsApproved OrderDiscount[] @relation("DiscountsApprovedBy")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -948,4 +952,336 @@ model ActivityLog {
 
   @@index([employeeId, createdAt])
   @@map("employee_activity_logs")
+}
+
+// ─────────────────────────────────────────────
+// POS / ORDERS
+// ─────────────────────────────────────────────
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  NEW
+  ACCEPTED
+  PREPARING
+  READY
+  SERVED
+  OUT_FOR_DELIVERY
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  ON_HOLD
+}
+
+enum TableStatus {
+  FREE
+  OCCUPIED
+  RESERVED
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  COUPON
+  MEMBERSHIP
+  MANUAL
+}
+
+enum KotStatus {
+  SENT
+  PREPARING
+  READY
+}
+
+enum SplitType {
+  EQUAL
+  ITEM_WISE
+  CUSTOM
+}
+
+model RestaurantTable {
+  id       String      @id @default(uuid())
+  name     String // e.g. "T-12"
+  capacity Int?
+  section  String? // e.g. "Indoor", "Rooftop"
+  status   TableStatus @default(FREE)
+  store    String      @default("Main Store")
+
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("restaurant_tables")
+}
+
+model Customer {
+  id            String  @id @default(uuid())
+  name          String
+  mobile        String  @unique
+  email         String?
+  address       String?
+  landmark      String?
+  loyaltyPoints Int     @default(0)
+
+  orders              Order[]
+  loyaltyTransactions LoyaltyTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([mobile])
+  @@map("customers")
+}
+
+model DeliveryPartner {
+  id       String  @id @default(uuid())
+  name     String
+  phone    String?
+  isActive Boolean @default(true)
+
+  orders Order[]
+
+  createdAt DateTime @default(now())
+
+  @@map("delivery_partners")
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  orderNumber String      @unique // e.g. ORD-000123
+  orderType   OrderType
+  status      OrderStatus @default(NEW)
+  holdNumber  String?     @unique
+
+  tableId String?
+  table   RestaurantTable? @relation(fields: [tableId], references: [id])
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  waiterId String?
+  waiter   Employee? @relation("OrdersByWaiter", fields: [waiterId], references: [id])
+
+  numberOfGuests Int?
+
+  // delivery-specific
+  deliveryPartnerId     String?
+  deliveryPartner       DeliveryPartner? @relation(fields: [deliveryPartnerId], references: [id])
+  deliveryCharge        Decimal?         @db.Decimal(10, 2)
+  deliveryStatus        String?
+  estimatedDeliveryTime DateTime?
+  deliveryAddress       String?
+
+  // takeaway-specific
+  pickupTime      DateTime?
+  packagingCharge Decimal?  @db.Decimal(10, 2)
+
+  // money
+  subtotal            Decimal @db.Decimal(12, 2)
+  discountAmount      Decimal @default(0) @db.Decimal(12, 2)
+  gstAmount           Decimal @default(0) @db.Decimal(12, 2)
+  serviceChargeAmount Decimal @default(0) @db.Decimal(12, 2)
+  grandTotal          Decimal @db.Decimal(12, 2)
+
+  notes String?
+  store String  @default("Main Store")
+
+  items               OrderItem[]
+  payments            Payment[]
+  kitchenOrders       KitchenOrder[]
+  invoice             Invoice?
+  billSplits          BillSplit[]
+  discountsApplied    OrderDiscount[]
+  loyaltyTransactions LoyaltyTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([orderType])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(10, 2) // snapshot at order time
+  totalPrice Decimal @db.Decimal(12, 2)
+  notes      String? // customization, printed on KOT
+
+  addOns            OrderItemAddOn[]
+  kitchenOrderItems KitchenOrderItem[]
+
+  createdAt DateTime @default(now())
+
+  @@map("order_items")
+}
+
+model AddOn {
+  id        String  @id @default(uuid())
+  name      String
+  price     Decimal @db.Decimal(10, 2)
+  isEnabled Boolean @default(true)
+
+  orderItemAddOns OrderItemAddOn[]
+
+  createdAt DateTime @default(now())
+
+  @@map("add_ons")
+}
+
+model OrderItemAddOn {
+  id          String    @id @default(uuid())
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  addOnId     String
+  addOn       AddOn     @relation(fields: [addOnId], references: [id])
+
+  quantity   Int     @default(1)
+  unitPrice  Decimal @db.Decimal(10, 2)
+  totalPrice Decimal @db.Decimal(12, 2)
+
+  @@map("order_item_add_ons")
+}
+
+model Discount {
+  id             String       @id @default(uuid())
+  code           String?      @unique
+  type           DiscountType
+  value          Decimal      @db.Decimal(10, 2) // percent or fixed amount
+  isActive       Boolean      @default(true)
+  validFrom      DateTime?
+  validTo        DateTime?
+  usageLimit     Int?
+  minOrderAmount Decimal?     @db.Decimal(12, 2)
+  store          String       @default("Main Store")
+
+  orderDiscounts OrderDiscount[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("discounts")
+}
+
+model OrderDiscount {
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  discountId String?
+  discount   Discount? @relation(fields: [discountId], references: [id])
+
+  type           DiscountType
+  amountDeducted Decimal      @db.Decimal(12, 2)
+  reason         String?
+
+  approvedById String?
+  approvedBy   Employee? @relation("DiscountsApprovedBy", fields: [approvedById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("order_discounts")
+}
+
+model Payment {
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  method               PaymentMethod
+  amount               Decimal       @db.Decimal(12, 2)
+  status               PaymentStatus @default(UNPAID)
+  transactionReference String?
+  paidAt               DateTime?
+
+  billSplitId String?
+  billSplit   BillSplit? @relation(fields: [billSplitId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("payments")
+}
+
+model BillSplit {
+  id        String    @id @default(uuid())
+  orderId   String
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  splitType SplitType
+  label     String // e.g. "Customer A"
+  amount    Decimal   @db.Decimal(12, 2)
+
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+
+  @@map("bill_splits")
+}
+
+model KitchenOrder {
+  id        String    @id @default(uuid())
+  orderId   String
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kotNumber String    @unique
+  status    KotStatus @default(SENT)
+
+  items KitchenOrderItem[]
+
+  printedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("kitchen_orders")
+}
+
+model KitchenOrderItem {
+  id             String       @id @default(uuid())
+  kitchenOrderId String
+  kitchenOrder   KitchenOrder @relation(fields: [kitchenOrderId], references: [id], onDelete: Cascade)
+  orderItemId    String
+  orderItem      OrderItem    @relation(fields: [orderItemId], references: [id])
+  quantity       Int
+
+  @@map("kitchen_order_items")
+}
+
+model Invoice {
+  id            String  @id @default(uuid())
+  orderId       String  @unique
+  order         Order   @relation(fields: [orderId], references: [id])
+  invoiceNumber String  @unique
+  gstNumber     String?
+  sentVia       String? // print / email / whatsapp — comma-separated or JSON if multiple
+  pdfUrl        String?
+
+  createdAt DateTime @default(now())
+
+  @@map("invoices")
+}
+
+model LoyaltyTransaction {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  orderId    String?
+  order      Order?   @relation(fields: [orderId], references: [id])
+
+  points Int // signed: + earn / - redeem
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  @@map("loyalty_transactions")
 }
