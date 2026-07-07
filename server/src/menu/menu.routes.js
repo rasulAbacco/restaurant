@@ -2,30 +2,96 @@
 import { Router } from "express";
 import * as controller from "./menu.controller.js";
 import upload from "../config/upload.js";
+import { requireAuth, requireRole } from "../auth/auth.middleware.js";
 
-// NOTE: No auth/role middleware yet — added intentionally as a later step.
-// When login exists, wrap the routes below like:
-//   router.post("/menu", requireAuth, requireRole(["Admin","Manager"]), controller.createMenuItem);
-// Read-only routes (GET) will allow Admin, Manager, Cashier, Kitchen Staff.
-// Write routes (POST/PUT/DELETE) will allow Admin, Manager only.
+// ==============================================
+// Role rules (per Menu Management doc):
+// - View (GET)              -> OWNER, MANAGER, CASHIER, KITCHEN
+// - Add / Edit (POST/PUT)   -> OWNER, MANAGER
+// - Delete                  -> OWNER only
+// - Reports / Export        -> OWNER, MANAGER
+// - Bulk Import             -> OWNER only
+// ==============================================
+
+const VIEW_ROLES = ["OWNER", "MANAGER", "CASHIER", "KITCHEN"];
+const EDIT_ROLES = ["OWNER", "MANAGER"];
 
 const router = Router();
 
 // ---------- Category ----------
-router.get("/categories", controller.getCategories);
-router.get("/categories/:id", controller.getCategoryById);
-router.post("/categories", controller.createCategory);
-router.put("/categories/:id", controller.updateCategory);
-router.delete("/categories/:id", controller.deleteCategory);
+router.get("/categories", requireAuth, requireRole(...VIEW_ROLES), controller.getCategories);
+router.get("/categories/:id", requireAuth, requireRole(...VIEW_ROLES), controller.getCategoryById);
+router.post("/categories", requireAuth, requireRole(...EDIT_ROLES), controller.createCategory);
+router.put("/categories/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateCategory);
+router.delete("/categories/:id", requireAuth, requireRole("OWNER"), controller.deleteCategory);
+
+// ---------- SubCategory ----------
+router.get("/subcategories", requireAuth, requireRole(...VIEW_ROLES), controller.getSubCategories);
+router.post("/subcategories", requireAuth, requireRole(...EDIT_ROLES), controller.createSubCategory);
+router.put("/subcategories/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateSubCategory);
+router.delete("/subcategories/:id", requireAuth, requireRole("OWNER"), controller.deleteSubCategory);
+
+// ---------- Kitchen Sections ----------
+router.get("/kitchen-sections", requireAuth, requireRole(...VIEW_ROLES), controller.getKitchenSections);
+router.post("/kitchen-sections", requireAuth, requireRole(...EDIT_ROLES), controller.createKitchenSection);
+router.put("/kitchen-sections/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateKitchenSection);
+router.delete("/kitchen-sections/:id", requireAuth, requireRole("OWNER"), controller.deleteKitchenSection);
 
 // ---------- Menu Items ----------
-router.get("/menu", controller.getMenuItems);
-router.get("/menu/:id", controller.getMenuItemById);
-router.post("/menu", controller.createMenuItem);
-router.put("/menu/:id", controller.updateMenuItem);
-router.delete("/menu/:id", controller.deleteMenuItem);
+router.get("/menu", requireAuth, requireRole(...VIEW_ROLES), controller.getMenuItems);
+router.get("/menu/:id", requireAuth, requireRole(...VIEW_ROLES), controller.getMenuItemById);
+router.post("/menu", requireAuth, requireRole(...EDIT_ROLES), controller.createMenuItem);
+router.put("/menu/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateMenuItem);
+router.delete("/menu/:id", requireAuth, requireRole("OWNER"), controller.deleteMenuItem);
 
-// ---------- Image Upload (used by both category & menu item forms) ----------
-router.post("/upload", upload.single("image"), controller.uploadImage);
+// ---------- Menu Variants ----------
+router.get("/menu/:menuItemId/variants", requireAuth, requireRole(...VIEW_ROLES), controller.getVariants);
+router.post("/menu/:menuItemId/variants", requireAuth, requireRole(...EDIT_ROLES), controller.createVariant);
+router.put("/variants/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateVariant);
+router.delete("/variants/:id", requireAuth, requireRole("OWNER"), controller.deleteVariant);
+
+// ---------- Add-ons ----------
+router.get("/addons", requireAuth, requireRole(...VIEW_ROLES), controller.getAddOns);
+router.post("/addons", requireAuth, requireRole(...EDIT_ROLES), controller.createAddOn);
+router.put("/addons/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateAddOn);
+router.delete("/addons/:id", requireAuth, requireRole("OWNER"), controller.deleteAddOn);
+
+router.get("/menu/:menuItemId/addons", requireAuth, requireRole(...VIEW_ROLES), controller.getAddOnsForItem);
+router.post("/menu/:menuItemId/addons", requireAuth, requireRole(...EDIT_ROLES), controller.attachAddOn);
+router.delete("/menu/:menuItemId/addons/:addOnId", requireAuth, requireRole(...EDIT_ROLES), controller.detachAddOn);
+
+// ---------- Combo Meals ----------
+router.get("/combos", requireAuth, requireRole(...VIEW_ROLES), controller.getCombos);
+router.get("/combos/:id", requireAuth, requireRole(...VIEW_ROLES), controller.getComboById);
+router.post("/combos", requireAuth, requireRole(...EDIT_ROLES), controller.createCombo);
+router.put("/combos/:id", requireAuth, requireRole(...EDIT_ROLES), controller.updateCombo);
+router.delete("/combos/:id", requireAuth, requireRole("OWNER"), controller.deleteCombo);
+router.post("/combos/:id/items", requireAuth, requireRole(...EDIT_ROLES), controller.addComboItem);
+router.delete("/combos/items/:comboItemId", requireAuth, requireRole(...EDIT_ROLES), controller.removeComboItem);
+
+// ---------- Price History ----------
+router.get("/menu/:id/price-history", requireAuth, requireRole(...EDIT_ROLES), controller.getPriceHistory);
+
+// ---------- Bulk Import / Export ----------
+router.post(
+  "/menu/import",
+  requireAuth,
+  requireRole("OWNER"),
+  upload.single("file"),
+  controller.importMenuItems
+);
+router.get("/menu/export", requireAuth, requireRole(...EDIT_ROLES), controller.exportMenuItems);
+
+// ---------- Reports ----------
+router.get("/menu/report", requireAuth, requireRole(...EDIT_ROLES), controller.getMenuReport);
+
+// ---------- Image Upload (used by menu item / category / combo forms) ----------
+router.post(
+  "/upload",
+  requireAuth,
+  requireRole(...EDIT_ROLES),
+  upload.single("image"),
+  controller.uploadImage
+);
 
 export default router;

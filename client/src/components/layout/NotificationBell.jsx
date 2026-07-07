@@ -118,7 +118,7 @@ const NotificationBell = () => {
       {/* ================= DROPDOWN ================= */}
 
       {open && (
-        <div className="absolute right-0 mt-3 w-[380px] bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden z-50">
+        <div className="absolute right-0 mt-3 w-[calc(100vw-2rem)] max-w-[380px] bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden z-50">
           {/* Header */}
 
           <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gray-50">

@@ -16,6 +16,8 @@ const AdminLayout = () => {
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
+  const [collapsed, setCollapsed] = useState(false);
+
   // ==========================================
   // SCROLL TO TOP
   // ==========================================
@@ -45,13 +47,22 @@ const AdminLayout = () => {
           SIDEBAR
       ====================================== */}
 
-      <Sidebar mobileOpen={mobileSidebarOpen} onClose={closeSidebar} />
+      <Sidebar
+        mobileOpen={mobileSidebarOpen}
+        onClose={closeSidebar}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed(!collapsed)}
+      />
 
       {/* ======================================
           MAIN CONTENT
       ====================================== */}
 
-      <div className="flex flex-col min-h-screen lg:ml-72 transition-all duration-300">
+      <div
+        className={`flex flex-col min-h-screen transition-all duration-300 ${
+          collapsed ? "lg:ml-24" : "lg:ml-72"
+        }`}
+      >
         {/* Header */}
 
         <Header onMenuClick={openSidebar} />

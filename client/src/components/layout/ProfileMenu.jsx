@@ -81,7 +81,7 @@ const ProfileMenu = () => {
       {/* ================= DROPDOWN ================= */}
 
       {open && (
-        <div className="absolute right-0 mt-3 w-80 bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
+        <div className="absolute right-0 mt-3 w-[calc(100vw-2rem)] max-w-[320px] bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
           {/* USER INFO */}
 
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-6 text-white">

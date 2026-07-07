@@ -116,27 +116,27 @@ const Header = ({ onMenuClick }) => {
       <div className="flex items-center justify-between px-6 py-4">
         {/* LEFT */}
 
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-5 min-w-0">
           <button
             onClick={onMenuClick}
-            className="lg:hidden w-11 h-11 rounded-xl border border-gray-200 flex items-center justify-center hover:bg-gray-100 transition"
+            className="lg:hidden w-11 h-11 rounded-xl border border-gray-200 flex items-center justify-center hover:bg-gray-100 transition flex-shrink-0"
           >
             <FiMenu size={20} />
           </button>
 
-          <div>
-            <h1 className="text-2xl font-bold text-gray-800">{pageTitle}</h1>
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-gray-800 truncate">{pageTitle}</h1>
 
-            <div className="flex items-center gap-2 mt-1 text-sm text-gray-500">
-              <Link to="/dashboard" className="hover:text-blue-600">
+            <div className="flex items-center gap-2 mt-1 text-sm text-gray-500 overflow-x-auto">
+              <Link to="/dashboard" className="hover:text-blue-600 flex-shrink-0">
                 Home
               </Link>
 
               {breadcrumb.map((item, index) => (
                 <React.Fragment key={index}>
-                  <FiChevronRight size={14} />
+                  <FiChevronRight size={14} className="flex-shrink-0" />
 
-                  <span className="capitalize">{item.replace("-", " ")}</span>
+                  <span className="capitalize whitespace-nowrap">{item.replace("-", " ")}</span>
                 </React.Fragment>
               ))}
             </div>
@@ -144,7 +144,7 @@ const Header = ({ onMenuClick }) => {
         </div>
         {/* ================= RIGHT ================= */}
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-shrink-0">
           {/* Search */}
 
           <div className="hidden md:flex items-center relative">

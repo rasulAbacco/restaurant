@@ -148,6 +148,10 @@ export const AuthProvider = ({ children }) => {
 
   const canManageInventory = () => isOwner() || isManager();
 
+  const canManageMenu = () => isOwner() || isManager();
+
+  const canDeleteMenuItems = () => isOwner();
+
   const canViewProfit = () => isOwner();
 
   // ==========================================
@@ -191,6 +195,10 @@ export const AuthProvider = ({ children }) => {
       canAccessKitchen,
 
       canManageInventory,
+
+      canManageMenu,
+
+      canDeleteMenuItems,
 
       canViewProfit,
     }),

@@ -31,7 +31,9 @@ export const findAllMenuItems = (filters = {}) => {
   if (filters.categoryId) where.categoryId = filters.categoryId;
   if (filters.subCategoryId) where.subCategoryId = filters.subCategoryId;
   if (filters.foodType) where.foodType = filters.foodType;
-  if (filters.isAvailable !== undefined) where.isAvailable = filters.isAvailable;
+  if (filters.isAvailable !== undefined) {
+    where.isAvailable = filters.isAvailable === true || filters.isAvailable === "true";
+  }
   if (filters.kitchenSectionId) where.kitchenSectionId = filters.kitchenSectionId;
   if (filters.status) where.status = filters.status;
   if (filters.search) {
@@ -68,3 +70,123 @@ export const softDeleteMenuItem = (id) =>
 
 export const hardDeleteMenuItem = (id) =>
   prisma.menuItem.delete({ where: { id } });
+
+// ---------- SubCategory ----------
+
+export const findAllSubCategories = (categoryId) =>
+  prisma.subCategory.findMany({
+    where: categoryId ? { categoryId } : undefined,
+    include: { category: true },
+    orderBy: { name: "asc" },
+  });
+
+export const findSubCategoryById = (id) =>
+  prisma.subCategory.findUnique({ where: { id }, include: { category: true } });
+
+export const createSubCategory = (data) => prisma.subCategory.create({ data });
+
+export const updateSubCategory = (id, data) =>
+  prisma.subCategory.update({ where: { id }, data });
+
+export const deleteSubCategory = (id) =>
+  prisma.subCategory.delete({ where: { id } });
+
+// ---------- Kitchen Section ----------
+
+export const findAllKitchenSections = () =>
+  prisma.kitchenSection.findMany({ orderBy: { name: "asc" } });
+
+export const findKitchenSectionById = (id) =>
+  prisma.kitchenSection.findUnique({ where: { id } });
+
+export const findKitchenSectionByName = (name) =>
+  prisma.kitchenSection.findUnique({ where: { name } });
+
+export const createKitchenSection = (data) =>
+  prisma.kitchenSection.create({ data });
+
+export const updateKitchenSection = (id, data) =>
+  prisma.kitchenSection.update({ where: { id }, data });
+
+export const deleteKitchenSection = (id) =>
+  prisma.kitchenSection.delete({ where: { id } });
+
+// ---------- Menu Variants ----------
+
+export const findVariantsByMenuItem = (menuItemId) =>
+  prisma.menuVariant.findMany({ where: { menuItemId } });
+
+export const findVariantById = (id) => prisma.menuVariant.findUnique({ where: { id } });
+
+export const createVariant = (data) => prisma.menuVariant.create({ data });
+
+export const updateVariant = (id, data) =>
+  prisma.menuVariant.update({ where: { id }, data });
+
+export const deleteVariant = (id) => prisma.menuVariant.delete({ where: { id } });
+
+// ---------- Add-ons ----------
+
+export const findAllAddOns = () =>
+  prisma.addOn.findMany({ orderBy: { name: "asc" } });
+
+export const findAddOnById = (id) => prisma.addOn.findUnique({ where: { id } });
+
+export const createAddOn = (data) => prisma.addOn.create({ data });
+
+export const updateAddOn = (id, data) => prisma.addOn.update({ where: { id }, data });
+
+export const deleteAddOn = (id) => prisma.addOn.delete({ where: { id } });
+
+export const linkAddOnToItem = (menuItemId, addOnId) =>
+  prisma.menuItemAddOn.create({ data: { menuItemId, addOnId } });
+
+export const unlinkAddOnFromItem = (menuItemId, addOnId) =>
+  prisma.menuItemAddOn.delete({
+    where: { menuItemId_addOnId: { menuItemId, addOnId } },
+  });
+
+export const findAddOnsForItem = (menuItemId) =>
+  prisma.menuItemAddOn.findMany({
+    where: { menuItemId },
+    include: { addOn: true },
+  });
+
+// ---------- Combo Meals ----------
+
+export const findAllCombos = () =>
+  prisma.comboMeal.findMany({
+    include: { items: { include: { menuItem: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+
+export const findComboById = (id) =>
+  prisma.comboMeal.findUnique({
+    where: { id },
+    include: { items: { include: { menuItem: true } } },
+  });
+
+export const createCombo = (data) => prisma.comboMeal.create({ data });
+
+export const updateCombo = (id, data) =>
+  prisma.comboMeal.update({ where: { id }, data });
+
+export const deleteCombo = (id) => prisma.comboMeal.delete({ where: { id } });
+
+export const addComboItem = (comboMealId, menuItemId, quantity = 1) =>
+  prisma.comboItem.create({ data: { comboMealId, menuItemId, quantity } });
+
+export const removeComboItem = (id) => prisma.comboItem.delete({ where: { id } });
+
+// ---------- Price History ----------
+
+export const logPriceChange = (menuItemId, oldPrice, newPrice, changedBy) =>
+  prisma.priceHistory.create({
+    data: { menuItemId, oldPrice, newPrice, changedBy },
+  });
+
+export const findPriceHistoryForItem = (menuItemId) =>
+  prisma.priceHistory.findMany({
+    where: { menuItemId },
+    orderBy: { changedAt: "desc" },
+  });

@@ -125,6 +125,10 @@ model MenuItem {
 
   recipeIngredients RecipeIngredient[]
   orderItems        OrderItem[]
+  variants          MenuVariant[]
+  menuItemAddOns    MenuItemAddOn[]
+  comboLinks        ComboItem[]
+  priceHistory      PriceHistory[]
 
   @@map("menu_items")
 }
@@ -1192,6 +1196,7 @@ model AddOn {
   isEnabled Boolean @default(true)
 
   orderItemAddOns OrderItemAddOn[]
+  menuItems       MenuItemAddOn[]
 
   createdAt DateTime @default(now())
 
@@ -1406,4 +1411,81 @@ model LoyaltyTransaction {
   createdAt DateTime @default(now())
 
   @@map("loyalty_transactions")
+}
+
+// ─────────────────────────────────────────────
+// MENU MANAGEMENT — ADDITIVE MODELS
+// Paste this block at the end of your existing schema.prisma.
+// These attach onto the existing MenuItem/AddOn/Category models
+// without altering anything already defined above.
+// ─────────────────────────────────────────────
+
+// Small / Medium / Large style variants for a single menu item
+model MenuVariant {
+  id              String   @id @default(uuid())
+  menuItemId      String
+  menuItem        MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  name            String // e.g. "Small", "Medium", "Large"
+  price           Decimal  @db.Decimal(10, 2)
+  prepTimeMinutes Int?
+  calories        Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("menu_variants")
+}
+
+// Optional: restrict which add-ons show up for a given menu item in the
+// admin/catalog UI. Not required by the POS order flow (AddOn/OrderItemAddOn
+// already work independently of this) — purely a curation layer.
+// If you never populate this table, every add-on stays available everywhere.
+model MenuItemAddOn {
+  id         String   @id @default(uuid())
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  addOnId    String
+  addOn      AddOn    @relation(fields: [addOnId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([menuItemId, addOnId])
+  @@map("menu_item_addons")
+}
+
+// Combo meals — bundle several menu items at a fixed price
+model ComboMeal {
+  id          String      @id @default(uuid())
+  name        String
+  price       Decimal     @db.Decimal(10, 2)
+  description String?
+  imageUrl    String?
+  isEnabled   Boolean     @default(true)
+  items       ComboItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("combo_meals")
+}
+
+model ComboItem {
+  id          String    @id @default(uuid())
+  comboMealId String
+  comboMeal   ComboMeal @relation(fields: [comboMealId], references: [id], onDelete: Cascade)
+  menuItemId  String
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
+  quantity    Int       @default(1)
+
+  @@map("combo_items")
+}
+
+// Audit trail — logged automatically whenever MenuItem.sellingPrice changes
+model PriceHistory {
+  id         String   @id @default(uuid())
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  oldPrice   Decimal  @db.Decimal(10, 2)
+  newPrice   Decimal  @db.Decimal(10, 2)
+  changedBy  String? // userAccountId (req.user.id) of whoever made the change
+  changedAt  DateTime @default(now())
+
+  @@map("price_history")
 }

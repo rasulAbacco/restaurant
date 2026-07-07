@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
 import {
@@ -29,14 +29,10 @@ import { useAuth } from "../../auth/AuthContext";
 // SIDEBAR
 // =====================================================
 
-const Sidebar = ({ mobileOpen, onClose }) => {
+const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
   const { user, logout } = useAuth();
 
   const location = useLocation();
-
-  const [collapsed, setCollapsed] = useState(false);
-
-  // const [mobileOpen, setMobileOpen] = useState(false);
 
   // =====================================================
   // OWNER MENU
@@ -230,6 +226,12 @@ const Sidebar = ({ mobileOpen, onClose }) => {
     },
 
     {
+      name: "Menu",
+      path: "/menu",
+      icon: <FiCoffee />,
+    },
+
+    {
       name: "Customers",
       path: "/customers",
       icon: <FiUsers />,
@@ -275,6 +277,12 @@ const Sidebar = ({ mobileOpen, onClose }) => {
       name: "Completed",
       path: "/kitchen/completed",
       icon: <FiCheckCircle />,
+    },
+
+    {
+      name: "Menu",
+      path: "/menu",
+      icon: <FiGrid />,
     },
   ];
   // =====================================================
@@ -330,7 +338,7 @@ const Sidebar = ({ mobileOpen, onClose }) => {
         )}
 
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggleCollapse}
           className="hidden lg:flex items-center justify-center w-10 h-10 rounded-xl hover:bg-gray-100 transition"
         >
           {collapsed ? <FiChevronRight /> : <FiChevronLeft />}
@@ -415,15 +423,6 @@ const Sidebar = ({ mobileOpen, onClose }) => {
 
   return (
     <>
-      {/* ================= MOBILE BUTTON ================= */}
-
-      <button
-        onClick={() => setMobileOpen(true)}
-        className="fixed top-5 left-5 lg:hidden z-50 bg-blue-600 text-white p-3 rounded-xl shadow-lg"
-      >
-        <FiMenu size={22} />
-      </button>
-
       {/* ================= MOBILE OVERLAY ================= */}
 
       {mobileOpen && (
