@@ -2,17 +2,28 @@
 // src/api/apiClient.js
 // ==============================================
 // Thin fetch wrapper:
-// - keeps the access token in memory only (never localStorage) to limit XSS blast radius
+// - access token is cached in localStorage (visible in DevTools, survives refresh)
+//   NOTE: this trades some XSS resistance for debuggability/convenience.
+//   If you want the harder-to-steal version back, swap this for an in-memory
+//   variable and rely on /auth/me + the refresh cookie to repopulate it on load.
 // - always sends credentials so the httpOnly refresh cookie goes along
 // - on a 401, tries a single silent refresh, then retries the original request once
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api";
 
-let accessToken = null;
+const ACCESS_TOKEN_STORAGE_KEY = "restaurant_access_token";
+
+let accessToken = localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY) || null;
 let refreshPromise = null; // de-dupe concurrent refresh calls
 
 export const setAccessToken = (token) => {
   accessToken = token;
+
+  if (token) {
+    localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+  } else {
+    localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+  }
 };
 
 export const getAccessToken = () => accessToken;
