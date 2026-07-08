@@ -1291,9 +1291,6 @@ model BillSplit {
   @@map("bill_splits")
 }
 
-// One KOT per (Order, KitchenSection) pair — each station that has items in
-// the order gets its own ticket, so Tandoor/Bar/Dessert can each track and
-// recall independently instead of sharing one monolithic ticket.
 model KitchenOrder {
   id        String      @id @default(uuid())
   orderId   String
@@ -1347,8 +1344,6 @@ model KitchenOrderItem {
   @@map("kitchen_order_items")
 }
 
-// Append-only audit trail — every status transition a KOT goes through,
-// including repeated Recall -> Prepare cycles. Powers delay/recall reports.
 model KitchenOrderStatusLog {
   id             String       @id @default(uuid())
   kitchenOrderId String
@@ -1368,8 +1363,6 @@ model KitchenOrderStatusLog {
   @@map("kitchen_order_status_logs")
 }
 
-// Chef-authored notes on a ticket, visible to managers.
-// e.g. "Waiting for ingredient", "Delayed due to rush"
 model KitchenNote {
   id             String       @id @default(uuid())
   kitchenOrderId String

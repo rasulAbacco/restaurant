@@ -20,7 +20,7 @@ export async function getKotsForOrder(req, res) {
 
 export async function getKitchenDisplay(req, res) {
   try {
-    res.json(await kotService.getActiveKitchenDisplay());
+    res.json(await kotService.getActiveKitchenDisplay(req.query.kitchenSectionId));
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch kitchen display", error: err.message });
   }
@@ -28,7 +28,11 @@ export async function getKitchenDisplay(req, res) {
 
 export async function updateKotStatus(req, res) {
   try {
-    const kot = await kotService.updateKotStatus(req.params.id, req.body.status);
+    const { status, reason } = req.body;
+    const kot = await kotService.updateKotStatus(req.params.id, status, {
+      changedById: req.user?.employeeId,
+      reason,
+    });
     res.json(kot);
   } catch (err) {
     res.status(400).json({ message: "Failed to update KOT status", error: err.message });

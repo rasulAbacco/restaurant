@@ -35,6 +35,7 @@ import Dashboard from "./dashboard/Dashboard";
 import MenuRoutes from "./menu/menuRoutes";
 import PosRoutes from "./pos/posRoutes";
 import SettingsRoutes from "./settings/settingsRoutes";
+import KitchenRoutes from "./pos/Kitchen/KitchenDisplayScreen";
 import KioskRoutes from "./kiosk/kioskRoutes";
 
 // ==============================================
@@ -80,6 +81,7 @@ function App() {
           {/* POS */}
 
           <Route path="/pos/*" element={<PosRoutes />} />
+          <Route path="/kitchen/*" element={<KitchenRoutes />} />
 
           {/* Reports */}
           <Route path="/reports/*" element={<ReportsRoutes />} />

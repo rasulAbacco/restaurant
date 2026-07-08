@@ -1,11 +1,14 @@
-import React from 'react'
+import { Routes, Route } from "react-router-dom";
+import PosOrderScreen from "./PosOrderScreen";
+import KitchenDisplayScreen from "./Kitchen/KitchenDisplayScreen";
 
-function posRoutes() {
+function PosRoutes() {
   return (
-    <div>
-      <h1>POS Routes</h1>
-    </div>
-  )
+    <Routes>
+      <Route index element={<PosOrderScreen />} />
+      <Route path="/kitchen/*" element={<KitchenDisplayScreen />} />
+    </Routes>
+  );
 }
 
-export default posRoutes
+export default PosRoutes;
