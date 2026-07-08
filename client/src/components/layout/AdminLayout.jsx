@@ -95,7 +95,7 @@ const AdminLayout = () => {
 
         {/* Footer */}
 
-        <Footer />
+        {/* <Footer /> */}
       </div>
 
       {/* ================= MOBILE BACKDROP ================= */}
