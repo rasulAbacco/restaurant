@@ -53,7 +53,7 @@ const MenuItemFormModal = ({ initial, categories, kitchenSections, onClose, onSa
   const [name, setName] = useState(initial?.name || "");
   const [shortName, setShortName] = useState(initial?.shortName || "");
   const [sku, setSku] = useState(initial?.sku || "");
-  const [barcode, setBarcode] = useState(initial?.barcode || "");
+  // const [barcode, setBarcode] = useState(initial?.barcode || "");
   const [categoryId, setCategoryId] = useState(initial?.categoryId || "");
   const [subCategoryId, setSubCategoryId] = useState(initial?.subCategoryId || "");
   const [subCategories, setSubCategories] = useState([]);
@@ -108,7 +108,7 @@ const MenuItemFormModal = ({ initial, categories, kitchenSections, onClose, onSa
         name: name.trim(),
         shortName: shortName.trim() || null,
         sku: sku.trim(),
-        barcode: barcode.trim() || null,
+        // barcode: barcode.trim() || null,
         categoryId,
         subCategoryId: subCategoryId || null,
         kitchenSectionId: kitchenSectionId || null,
@@ -182,9 +182,9 @@ const MenuItemFormModal = ({ initial, categories, kitchenSections, onClose, onSa
             <Field label="SKU" required>
               <input type="text" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. BIR-001" className={inputClass} />
             </Field>
-            <Field label="Barcode">
+            {/* <Field label="Barcode">
               <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} placeholder="Optional" className={inputClass} />
-            </Field>
+            </Field> */}
             <Field label="Food Type">
               <select value={foodType} onChange={(e) => setFoodType(e.target.value)} className={inputClass}>
                 <option value="VEG">Veg</option>
