@@ -189,8 +189,14 @@ export async function createLoginAccount(
 }
 
 export async function getDashboardStats() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // CHANGED: use a UTC-anchored "today" (matching attendance.service's
+  // startOfDay) instead of setHours(0,0,0,0), which uses the server's local
+  // timezone and no longer matches how Attendance.date (a @db.Date column)
+  // actually gets stored once startOfDay is UTC-based.
+  const now = new Date();
+  const today = new Date(
+    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()),
+  );
 
   const [total, present, absent, onLeave, pendingLeaveRequests] =
     await Promise.all([

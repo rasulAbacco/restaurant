@@ -384,6 +384,24 @@ const listActivityLogs = async (params = {}) => {
   return { success: true, ...data };
 };
 
+// CHANGED: manual activity log entry — the backend endpoint already existed
+// (POST /employees/activity-logs) but nothing in the UI called it.
+const createActivityLog = async ({ employeeId, action }) => {
+  const { ok, data } = await apiRequest(`/employees/activity-logs`, {
+    method: "POST",
+    body: JSON.stringify({ employeeId, action }),
+  });
+
+  if (!ok) {
+    return {
+      success: false,
+      message: data?.message || "Unable to add activity log entry.",
+    };
+  }
+
+  return { success: true, data };
+};
+
 // ==========================================
 // EXPORT
 // ==========================================
@@ -412,6 +430,7 @@ const employeesService = {
   listPerformance,
   upsertPerformance,
   listActivityLogs,
+  createActivityLog,
 };
 
 export default employeesService;
