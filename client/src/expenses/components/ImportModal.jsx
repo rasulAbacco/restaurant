@@ -105,8 +105,10 @@ const ImportModal = ({ open, onClose, onImported }) => {
               {/* Step 1: template + upload */}
               <div className="rounded-2xl border border-dashed border-gray-300 p-5">
                 <p className="text-sm text-gray-600 mb-3">
-                  New here? Start with the template — it has an <strong>Instructions</strong> sheet
-                  explaining exactly what goes in each column, plus an example row.
+                  New here? Start with the template — required columns are shaded <strong>red</strong>,
+                  optional ones are <strong>blue</strong>, and Category/Payment Method/Payment Status have
+                  dropdown lists so you can't mistype them. Full details are on the{" "}
+                  <strong>Instructions</strong> sheet.
                 </p>
                 <button
                   onClick={handleDownloadTemplate}
@@ -128,6 +130,7 @@ const ImportModal = ({ open, onClose, onImported }) => {
                       <>
                         <FiUpload className="text-2xl text-gray-400" />
                         <span className="text-sm text-gray-500">Tap to choose your filled-in .xlsx file</span>
+                        <span className="text-xs text-gray-400">We'll show you exactly what will be imported before anything is saved</span>
                       </>
                     )}
                   </label>
@@ -141,6 +144,18 @@ const ImportModal = ({ open, onClose, onImported }) => {
               {/* Step 2: preview */}
               {result && (
                 <div className="space-y-4">
+                  <div>
+                    <h3 className="text-base font-bold text-gray-800">
+                      We found {result.validRows.length + result.errorRows.length} row
+                      {result.validRows.length + result.errorRows.length === 1 ? "" : "s"} in your file
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {result.errorRows.length === 0
+                        ? "Everything looks good — review the preview below, then click Import."
+                        : `${result.validRows.length} will be imported as-is. ${result.errorRows.length} need fixing first — only the good rows are imported, the rest are skipped until you fix and re-upload.`}
+                    </p>
+                  </div>
+
                   <div className="flex gap-3">
                     <div className="flex-1 rounded-xl bg-green-50 border border-green-100 px-4 py-3 text-center">
                       <p className="text-2xl font-bold text-green-700">{result.validRows.length}</p>

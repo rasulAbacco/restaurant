@@ -11,27 +11,37 @@ async function generateExpenseNumber() {
 // ==============================================
 
 const IMPORT_COLUMNS = [
-  { header: "Title", key: "title" },
-  { header: "Category", key: "categoryName" },
-  { header: "Store", key: "store" },
-  { header: "Expense Date (YYYY-MM-DD)", key: "expenseDate" },
-  { header: "Amount", key: "amount" },
-  { header: "GST Amount", key: "gstAmount" },
-  { header: "Discount", key: "discount" },
-  { header: "Invoice Number", key: "invoiceNumber" },
-  { header: "Payment Method (CASH/CARD/UPI/BANK_TRANSFER/CHEQUE/OTHER)", key: "paymentMethod" },
-  { header: "Payment Status (UNPAID/PARTIAL/PAID/OVERDUE)", key: "paymentStatus" },
-  { header: "Payment Date (YYYY-MM-DD)", key: "paymentDate" },
-  { header: "Transaction Reference", key: "transactionReference" },
-  { header: "Description", key: "description" },
+  { header: "Title", key: "title", required: true },
+  { header: "Category", key: "categoryName", required: true },
+  { header: "Store", key: "store", required: true },
+  { header: "Expense Date (YYYY-MM-DD)", key: "expenseDate", required: true },
+  { header: "Amount", key: "amount", required: true },
+  { header: "GST Amount", key: "gstAmount", required: false },
+  { header: "Discount", key: "discount", required: false },
+  { header: "Invoice Number", key: "invoiceNumber", required: false },
+  { header: "Payment Method", key: "paymentMethod", required: false },
+  { header: "Payment Status", key: "paymentStatus", required: false },
+  { header: "Payment Date (YYYY-MM-DD)", key: "paymentDate", required: false },
+  { header: "Transaction Reference", key: "transactionReference", required: false },
+  { header: "Description", key: "description", required: false },
 ];
 
 const VALID_PAYMENT_METHODS = ["CASH", "CARD", "UPI", "BANK_TRANSFER", "CHEQUE", "OTHER"];
 const VALID_PAYMENT_STATUSES = ["UNPAID", "PARTIAL", "PAID", "OVERDUE"];
 
-// Builds the downloadable template: an Instructions sheet explaining every
-// column (with the real, current category names so people don't guess), and
-// a Data sheet with headers + one greyed-out example row.
+const REQUIRED_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8CBAD" } }; // soft red/orange
+const OPTIONAL_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDCE6F7" } }; // soft blue
+const REQUIRED_FONT_COLOR = { argb: "FF7A2E0E" };
+
+// Builds the downloadable template:
+//  - a Data sheet where required columns are shaded red and marked with *,
+//    optional columns are shaded blue, dropdowns are provided for Category /
+//    Payment Method / Payment Status so people can't mistype them, and the
+//    header row is frozen so it stays visible while scrolling.
+//  - an Instructions sheet with a plain-language headline up top, then a
+//    row-by-row breakdown of every column (with the real, current category
+//    names so people don't have to guess).
+//  - a hidden Lists sheet that just backs the Category dropdown.
 export const generateImportTemplate = async () => {
   const workbook = new ExcelJS.Workbook();
 
@@ -41,36 +51,21 @@ export const generateImportTemplate = async () => {
   });
   const categoryNames = categories.map((c) => c.name).join(", ") || "(no categories yet — add one first)";
 
-  const instructions = workbook.addWorksheet("Instructions");
-  instructions.columns = [
-    { header: "Column", key: "column", width: 42 },
-    { header: "Required?", key: "required", width: 12 },
-    { header: "What to enter", key: "help", width: 75 },
-  ];
-  instructions.getRow(1).font = { bold: true };
-  instructions.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDCE6F7" } };
+  // ---------- Data sheet ----------
+  const data = workbook.addWorksheet("Data", { views: [{ state: "frozen", ySplit: 1 }] });
+  data.columns = IMPORT_COLUMNS.map((c) => ({
+    header: c.required ? `${c.header} *` : c.header,
+    key: c.key,
+    width: 26,
+  }));
 
-  instructions.addRows([
-    { column: "Title", required: "Yes", help: "Short name for the expense, e.g. 'June Electricity Bill'." },
-    { column: "Category", required: "Yes", help: `Must exactly match an existing category name (case-insensitive). Available: ${categoryNames}` },
-    { column: "Store", required: "Yes", help: "Store/branch name exactly as it appears under Stores." },
-    { column: "Expense Date", required: "Yes", help: "Format: YYYY-MM-DD, e.g. 2026-07-09." },
-    { column: "Amount", required: "Yes", help: "Bill amount before GST/discount. Must be a number greater than 0." },
-    { column: "GST Amount", required: "No", help: "Leave blank for 0. This is the GST amount in rupees, not a percentage." },
-    { column: "Discount", required: "No", help: "Leave blank for 0." },
-    { column: "Invoice Number", required: "No", help: "Supplier's invoice/bill number, if you have one." },
-    { column: "Payment Method", required: "No", help: "One of: CASH, CARD, UPI, BANK_TRANSFER, CHEQUE, OTHER." },
-    { column: "Payment Status", required: "No", help: "One of: UNPAID, PARTIAL, PAID, OVERDUE. Defaults to UNPAID if left blank." },
-    { column: "Payment Date", required: "No*", help: "Format: YYYY-MM-DD. *Required if Payment Status is PAID or PARTIAL." },
-    { column: "Transaction Reference", required: "No", help: "UPI reference number or cheque number, if applicable." },
-    { column: "Description", required: "No", help: "Any extra notes about this expense." },
-  ]);
-  instructions.getColumn("help").alignment = { wrapText: true, vertical: "top" };
-
-  const data = workbook.addWorksheet("Data");
-  data.columns = IMPORT_COLUMNS.map((c) => ({ header: c.header, key: c.key, width: 26 }));
-  data.getRow(1).font = { bold: true };
-  data.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDCE6F7" } };
+  IMPORT_COLUMNS.forEach((col, i) => {
+    const cell = data.getRow(1).getCell(i + 1);
+    cell.font = { bold: true, color: col.required ? REQUIRED_FONT_COLOR : { argb: "FF1F1F1F" } };
+    cell.fill = col.required ? REQUIRED_FILL : OPTIONAL_FILL;
+    cell.alignment = { wrapText: true, vertical: "middle" };
+  });
+  data.getRow(1).height = 30;
 
   data.addRow({
     title: "Example: June Electricity Bill",
@@ -85,9 +80,105 @@ export const generateImportTemplate = async () => {
     paymentStatus: "PAID",
     paymentDate: "2026-06-06",
     transactionReference: "UPI123456",
-    description: "",
+    description: "Delete this example row before importing your own data",
   });
   data.getRow(2).font = { italic: true, color: { argb: "FF999999" } };
+
+  // Dropdown validations so Category / Payment Method / Payment Status can't
+  // be mistyped. Category pulls from a hidden sheet since names are dynamic
+  // and can be longer than Excel's ~255-char inline-list limit.
+  const LAST_ROW = 500; // room to add many rows without re-downloading
+
+  if (categories.length > 0) {
+    const lists = workbook.addWorksheet("Lists");
+    lists.state = "hidden";
+    lists.getCell("A1").value = "Category";
+    categories.forEach((c, i) => {
+      lists.getCell(`A${i + 2}`).value = c.name;
+    });
+    const categoryColLetter = data.getColumn("categoryName").letter;
+    for (let r = 2; r <= LAST_ROW; r++) {
+      data.getCell(`${categoryColLetter}${r}`).dataValidation = {
+        type: "list",
+        allowBlank: false,
+        formulae: [`Lists!$A$2:$A$${categories.length + 1}`],
+        showErrorMessage: true,
+        errorTitle: "Unknown category",
+        error: "Pick a category from the dropdown — it must match one already set up in the app.",
+      };
+    }
+  }
+
+  const paymentMethodColLetter = data.getColumn("paymentMethod").letter;
+  const paymentStatusColLetter = data.getColumn("paymentStatus").letter;
+  for (let r = 2; r <= LAST_ROW; r++) {
+    data.getCell(`${paymentMethodColLetter}${r}`).dataValidation = {
+      type: "list",
+      allowBlank: true,
+      formulae: [`"${VALID_PAYMENT_METHODS.join(",")}"`],
+      showErrorMessage: true,
+      errorTitle: "Unknown payment method",
+      error: `Must be one of: ${VALID_PAYMENT_METHODS.join(", ")} (or leave blank).`,
+    };
+    data.getCell(`${paymentStatusColLetter}${r}`).dataValidation = {
+      type: "list",
+      allowBlank: true,
+      formulae: [`"${VALID_PAYMENT_STATUSES.join(",")}"`],
+      showErrorMessage: true,
+      errorTitle: "Unknown payment status",
+      error: `Must be one of: ${VALID_PAYMENT_STATUSES.join(", ")} (or leave blank — defaults to UNPAID).`,
+    };
+  }
+
+  // ---------- Instructions sheet ----------
+  const instructions = workbook.addWorksheet("Instructions");
+  instructions.columns = [
+    { key: "column", width: 6 },
+    { key: "required", width: 36 },
+    { key: "help", width: 75 },
+  ];
+
+  instructions.mergeCells("A1:C1");
+  instructions.getCell("A1").value = "📋 How to fill this template";
+  instructions.getCell("A1").font = { bold: true, size: 16, color: { argb: "FF1F4E78" } };
+  instructions.getRow(1).height = 28;
+
+  instructions.mergeCells("A2:C2");
+  instructions.getCell("A2").value =
+    "Go to the 'Data' tab and fill in one row per expense. Columns shaded RED are required; " +
+    "columns shaded BLUE are optional. Category, Payment Method and Payment Status have dropdown " +
+    "lists — click a cell in those columns and choose from the arrow instead of typing. Delete the " +
+    "grey example row before importing your real data, then upload the file back in the app to see " +
+    "a preview of what will be imported and any rows that need fixing.";
+  instructions.getCell("A2").alignment = { wrapText: true, vertical: "top" };
+  instructions.getRow(2).height = 75;
+
+  instructions.mergeCells("A3:C3"); // spacer row
+
+  instructions.getRow(4).values = ["", "Required?", "What to enter"];
+  instructions.getRow(4).font = { bold: true };
+  instructions.getRow(4).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDCE6F7" } };
+
+  const instructionRows = [
+    { required: "Title *", help: "Short name for the expense, e.g. 'June Electricity Bill'." },
+    { required: "Category *", help: `Pick from the dropdown. Available: ${categoryNames}` },
+    { required: "Store *", help: "Store/branch name exactly as it appears under Stores." },
+    { required: "Expense Date *", help: "Format: YYYY-MM-DD, e.g. 2026-07-09." },
+    { required: "Amount *", help: "Bill amount before GST/discount. Must be a number greater than 0." },
+    { required: "GST Amount", help: "Leave blank for 0. This is the GST amount in rupees, not a percentage." },
+    { required: "Discount", help: "Leave blank for 0." },
+    { required: "Invoice Number", help: "Supplier's invoice/bill number, if you have one." },
+    { required: "Payment Method", help: "Pick from the dropdown, or leave blank." },
+    { required: "Payment Status", help: "Pick from the dropdown. Defaults to UNPAID if left blank." },
+    { required: "Payment Date", help: "Format: YYYY-MM-DD. Required only if Payment Status is PAID or PARTIAL." },
+    { required: "Transaction Reference", help: "UPI reference number or cheque number, if applicable." },
+    { required: "Description", help: "Any extra notes about this expense." },
+  ];
+  instructionRows.forEach((r, i) => {
+    const row = instructions.getRow(5 + i);
+    row.values = ["", r.required, r.help];
+    row.getCell(3).alignment = { wrapText: true, vertical: "top" };
+  });
 
   return workbook.xlsx.writeBuffer();
 };
