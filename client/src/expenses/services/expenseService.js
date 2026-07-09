@@ -2,7 +2,7 @@
 // src/expenses/services/expenseService.js
 // ==============================================
 
-import { apiRequest } from "../../api/apiClient";
+import { apiRequest, getAccessToken, BASE_URL } from "../../api/apiClient";
 
 // ==============================================
 // DASHBOARD
@@ -207,6 +207,100 @@ export const deleteStore = async (id) => {
   return data;
 };
 // ==============================================
+// IMPORT / EXPORT
+// apiRequest() is built for JSON responses, so file upload/download go
+// through fetch directly. Adjust API_ROOT if your app isn't same-origin —
+// it should match whatever base URL apiClient.js uses internally.
+// ==============================================
+
+const API_ROOT = `${BASE_URL}/expenses`;
+
+const EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+const downloadBlob = async (url, filename) => {
+  let res;
+  try {
+    res = await fetch(url, {
+      credentials: "include",
+      headers: {
+        Authorization: `Bearer ${getAccessToken()}`,
+      },
+    });
+  } catch {
+    // fetch itself threw — network down, CORS block, wrong host/port, etc.
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+
+  if (!res.ok || !contentType.includes(EXCEL_CONTENT_TYPE)) {
+    // Either an explicit error status, OR a 200 that isn't actually a
+    // spreadsheet (e.g. a proxy/misconfigured route serving JSON/HTML with
+    // a 200 status) — never let that get saved to disk as a fake .xlsx.
+    let message = "Download failed";
+    try {
+      const data = await res.json();
+      message = data?.error || data?.message || message;
+    } catch {
+      // body wasn't JSON either — surface a status-based message instead
+      message = `Download failed (server returned ${res.status || "an unexpected"} response).`;
+    }
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+
+  if (!blob || blob.size === 0) {
+    throw new Error("Download failed — the file was empty.");
+  }
+
+  const link = document.createElement("a");
+  link.href = window.URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(link.href);
+};
+
+export const downloadImportTemplate = () =>
+  downloadBlob(`${API_ROOT}/import/template`, "expense-import-template.xlsx");
+
+export const validateImportFile = async (file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  let res;
+  try {
+    res = await fetch(`${API_ROOT}/import/validate`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Authorization: `Bearer ${getAccessToken()}`,
+      },
+      body: formData,
+    });
+  } catch {
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || data?.message || "Unable to check the file");
+  return data; // { validRows, errorRows }
+};
+
+export const confirmImportRows = async (rows) => {
+  const { ok, data } = await apiRequest("/expenses/import/confirm", {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
+  if (!ok) throw new Error(data?.error || "Unable to import expenses");
+  return data; // { created, skipped }
+};
+
+export const exportExpenses = (query = "") =>
+  downloadBlob(`${API_ROOT}/export${query}`, "expenses-export.xlsx");
+// ==============================================
 // EXPORT
 // ==============================================
 
@@ -226,5 +320,9 @@ export default {
   getStores,
   createStore,
   updateStore,
-  deleteStore
+  deleteStore,
+  downloadImportTemplate,
+  validateImportFile,
+  confirmImportRows,
+  exportExpenses,
 };

@@ -12,6 +12,13 @@ router.use("/categories", categoriesRoutes);
 router.get("/dashboard", expenseController.getDashboard);
 router.get("/reports", expenseController.getReports);
 
+// Import / Export — must ALSO come before "/:id" for the same reason,
+// otherwise "import"/"export" get swallowed as expense IDs
+router.get("/import/template", expenseController.downloadImportTemplate);
+router.post("/import/validate", expenseController.uploadMiddleware, expenseController.validateImport);
+router.post("/import/confirm", expenseController.confirmImport);
+router.get("/export", expenseController.exportExpenses);
+
 // Core expense CRUD
 router.get("/", expenseController.getAllExpenses);
 router.get("/:id", expenseController.getExpenseById);

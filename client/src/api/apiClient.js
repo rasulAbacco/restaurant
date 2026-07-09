@@ -9,7 +9,7 @@
 // - always sends credentials so the httpOnly refresh cookie goes along
 // - on a 401, tries a single silent refresh, then retries the original request once
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api";
+export const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api";
 
 const ACCESS_TOKEN_STORAGE_KEY = "restaurant_access_token";
 
@@ -88,4 +88,4 @@ export const apiRequest = async (
   return result;
 };
 
-export default { apiRequest, setAccessToken, getAccessToken };
+export default { apiRequest, setAccessToken, getAccessToken, BASE_URL };

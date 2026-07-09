@@ -1,4 +1,55 @@
 import * as expenseService from "./expenses.service.js";
+import multer from "multer";
+
+
+export const uploadMiddleware = multer({ storage: multer.memoryStorage() }).single("file");
+
+export const downloadImportTemplate = async (req, res) => {
+  try {
+    const buffer = await expenseService.generateImportTemplate();
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="expense-import-template.xlsx"');
+    return res.send(Buffer.from(buffer));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+export const validateImport = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Please attach an .xlsx file" });
+    }
+    const result = await expenseService.parseImportFile(req.file.buffer);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+export const confirmImport = async (req, res) => {
+  try {
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: "No rows to import" });
+    }
+    const result = await expenseService.confirmImportRows(rows, req.body.createdBy);
+    return res.status(201).json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+export const exportExpenses = async (req, res) => {
+  try {
+    const buffer = await expenseService.exportExpensesToExcel(req.query);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="expenses-export.xlsx"');
+    return res.send(Buffer.from(buffer));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
 
 export const getAllExpenses = async (req, res) => {
   try {
