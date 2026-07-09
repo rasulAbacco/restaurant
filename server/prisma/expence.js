@@ -130,10 +130,13 @@ async function seedCategories() {
   return categories;
 }
 
-async function seedExpenses(stores, categories) {
+async function seedExpenses(stores, categories, force) {
   const existingCount = await prisma.expense.count();
-  if (existingCount > 0) {
-    console.log(`Skipping expense seed — ${existingCount} expense(s) already exist.`);
+  if (existingCount > 0 && !force) {
+    console.log(
+      `Skipping expense seed — ${existingCount} expense(s) already exist. ` +
+        `Run with --force to add the sample expenses anyway (e.g. "node prisma/seed.js --force").`,
+    );
     return;
   }
 
@@ -207,9 +210,10 @@ async function seedExpenses(stores, categories) {
 // ==============================================
 
 async function main() {
+  const force = process.argv.includes("--force");
   const stores = await seedStores();
   const categories = await seedCategories();
-  await seedExpenses(stores, categories);
+  await seedExpenses(stores, categories, force);
   console.log("Seed complete.");
 }
 
