@@ -1,10 +1,17 @@
 // server/src/employees/attendance/attendance.service.js
 import prisma from "../../config/prisma.js";
+import * as activityLogsService from "../activity-logs/activityLogs.service.js";
 
 function startOfDay(dateInput) {
   const d = dateInput ? new Date(dateInput) : new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
+  // CHANGED: build the boundary in UTC (not d.setHours, which uses the
+  // server process's local timezone). Attendance.date is a @db.Date column,
+  // and Prisma stores DateTime values into it by taking the UTC date part.
+  // If the server runs in a timezone ahead of UTC (e.g. IST, +5:30), local
+  // midnight is still the previous day in UTC, so a plain setHours(0,0,0,0)
+  // silently writes attendance one calendar day early. Constructing with
+  // Date.UTC anchors us to the same calendar day the DB column will store.
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 }
 
 export async function checkIn(employeeId, { ipAddress, device } = {}) {
@@ -21,6 +28,15 @@ export async function checkIn(employeeId, { ipAddress, device } = {}) {
       data: { employeeId, eventType: "CLOCK_IN", ipAddress, device },
     }),
   ]);
+
+  // CHANGED: auto-record to the employee activity log — nothing previously
+  // called logActivity anywhere, so the Activity Log tab was always empty.
+  await activityLogsService.logActivity({
+    employeeId,
+    action: "Checked in",
+    ipAddress,
+    device,
+  });
 
   return attendance;
 }
@@ -53,6 +69,14 @@ export async function checkOut(employeeId, { ipAddress, device } = {}) {
       data: { employeeId, eventType: "CLOCK_OUT", ipAddress, device },
     }),
   ]);
+
+  // CHANGED: auto-record to the employee activity log (see checkIn above).
+  await activityLogsService.logActivity({
+    employeeId,
+    action: `Checked out (worked ${attendance.workingHours ?? "—"} hrs)`,
+    ipAddress,
+    device,
+  });
 
   return attendance;
 }

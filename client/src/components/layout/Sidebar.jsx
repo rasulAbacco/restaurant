@@ -81,11 +81,11 @@ const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
       icon: <FiBox />,
     },
 
-    {
-      name: "Customers",
-      path: "/customers",
-      icon: <FiUsers />,
-    },
+    // {
+    //   name: "Customers",
+    //   path: "/customers",
+    //   icon: <FiUsers />,
+    // },
 
     {
       name: "Billing",
