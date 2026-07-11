@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import InvoiceView from "./InvoiceView";
-import { getOrders, getBillingSummary, completeBilling } from "../pos/api/posApi";
+import { getOrders, getBillingSummary, completeBilling, sendToKitchen } from "../pos/api/posApi";
 
 const PAYMENT_METHODS = [
   { key: "CASH", label: "Cash" },
@@ -48,6 +48,12 @@ export default function Billings() {
   const [payError, setPayError] = useState(null);
 
   const [result, setResult] = useState(null); // { order, invoice, payments } once paid
+  // Only takeaway orders get fired to the kitchen from here (dine-in orders
+  // were already sent when they were placed) — tracked so the success
+  // message can say the right thing, and so a failed kitchen call after a
+  // successful payment surfaces without blocking the invoice.
+  const [sentToKitchen, setSentToKitchen] = useState(false);
+  const [kitchenError, setKitchenError] = useState(null);
 
   const loadOrders = useCallback(() => {
     setOrdersLoading(true);
@@ -71,6 +77,8 @@ export default function Billings() {
     setSummaryError(null);
     setResult(null);
     setPayError(null);
+    setSentToKitchen(false);
+    setKitchenError(null);
     setMode("CASH");
     getBillingSummary(orderId)
       .then((data) => {
@@ -122,8 +130,38 @@ export default function Billings() {
             .map((l) => ({ method: l.method, amount: Number(l.amount) }))
         : [{ method: mode, amount: summary.balanceDue }];
 
+    // Capture this before the order drops off the active list on reload.
+    const isTakeaway = selectedOrder?.orderType === "TAKEAWAY";
+
     try {
       const data = await completeBilling(selectedOrderId, { payments });
+
+      // Takeaway → Billing → Payment Completed → Send to Kitchen → Invoice.
+      // Dine-in orders were already fired to the kitchen at placement, so
+      // only takeaway needs this step, and only now that payment cleared.
+      if (isTakeaway) {
+        // Careful: data.order is a lean object (just enough to refresh the
+        // active-orders list) — it does NOT reliably carry the item array.
+        // The full item records with real ids live on data.invoice.order,
+        // the same place InvoiceView reads them from below.
+        const orderItemIds = (data.invoice?.order?.items || data.order?.items || summary?.items || []).map(
+          (i) => i.id
+        );
+        if (orderItemIds.length) {
+          try {
+            await sendToKitchen(selectedOrderId, orderItemIds);
+            setSentToKitchen(true);
+          } catch (kitchenErr) {
+            // Payment already succeeded — don't lose that. Surface the
+            // kitchen-send failure separately instead of blocking the invoice.
+            setKitchenError(kitchenErr.message);
+          }
+        } else {
+          // No items found anywhere — don't silently claim success.
+          setKitchenError("Could not find the order's items to send to the kitchen.");
+        }
+      }
+
       setResult(data);
       loadOrders(); // the just-billed order drops off the active list
     } catch (err) {
@@ -136,6 +174,8 @@ export default function Billings() {
   function handleDone() {
     setResult(null);
     setSummary(null);
+    setSentToKitchen(false);
+    setKitchenError(null);
     selectOrder(null);
   }
 
@@ -357,8 +397,16 @@ export default function Billings() {
 
               {result && (
                 <div className="mt-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-                  Payment received — invoice generated on the right.
+                  {sentToKitchen
+                    ? "Payment received — order sent to kitchen. Invoice generated on the right."
+                    : "Payment received — invoice generated on the right."}
                 </div>
+              )}
+
+              {kitchenError && (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                  Payment succeeded, but sending the order to the kitchen failed: {kitchenError}
+                </p>
               )}
 
               {payError && (
