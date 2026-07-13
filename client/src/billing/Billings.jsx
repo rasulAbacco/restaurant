@@ -47,6 +47,13 @@ export default function Billings() {
   const [processing, setProcessing] = useState(false);
   const [payError, setPayError] = useState(null);
 
+  // Discount keyed in at the billing counter — applied on top of whatever
+  // discount (if any) is already on the order. Not persisted until
+  // "Complete Payment" is clicked; everything below is just a live preview.
+  const [discountType, setDiscountType] = useState(null); // null | "PERCENTAGE" | "FIXED_AMOUNT"
+  const [discountValue, setDiscountValue] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
+
   const [result, setResult] = useState(null); // { order, invoice, payments } once paid
   // Only takeaway orders get fired to the kitchen from here (dine-in orders
   // were already sent when they were placed) — tracked so the success
@@ -80,6 +87,9 @@ export default function Billings() {
     setSentToKitchen(false);
     setKitchenError(null);
     setMode("CASH");
+    setDiscountType(null);
+    setDiscountValue("");
+    setDiscountReason("");
     getBillingSummary(orderId)
       .then((data) => {
         if (!data || !Array.isArray(data.items)) {
@@ -115,8 +125,29 @@ export default function Billings() {
     setSplitLines((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev));
   }
 
+  // Live preview of the discount being keyed in — not persisted until
+  // Complete Payment is clicked. Percentage is computed off the subtotal
+  // (same base the backend's own computeDiscountAmount uses), so the
+  // preview matches exactly what gets recorded server-side.
+  const pendingDiscountAmount = useMemo(() => {
+    if (!summary || !discountType) return 0;
+    const raw = Number(discountValue);
+    if (!raw || raw <= 0) return 0;
+
+    const amount = discountType === "PERCENTAGE" ? (summary.subtotal * Math.min(raw, 100)) / 100 : raw;
+
+    // Never let a discount wipe out the balance entirely — the backend
+    // requires at least one payment line with a positive amount, so at
+    // least ₹0.01 always has to remain payable.
+    const cap = Math.max(summary.balanceDue - 0.01, 0);
+    return Math.min(Math.max(amount, 0), cap);
+  }, [summary, discountType, discountValue]);
+
+  const previewGrandTotal = summary ? Math.max(summary.grandTotal - pendingDiscountAmount, 0) : 0;
+  const previewBalanceDue = summary ? Math.max(summary.balanceDue - pendingDiscountAmount, 0) : 0;
+
   const splitTotal = splitLines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
-  const splitMismatch = summary ? Math.abs(splitTotal - summary.balanceDue) > 0.01 : true;
+  const splitMismatch = summary ? Math.abs(splitTotal - previewBalanceDue) > 0.01 : true;
 
   async function handleCompletePayment() {
     if (!summary) return;
@@ -128,13 +159,20 @@ export default function Billings() {
         ? splitLines
             .filter((l) => Number(l.amount) > 0)
             .map((l) => ({ method: l.method, amount: Number(l.amount) }))
-        : [{ method: mode, amount: summary.balanceDue }];
+        : [{ method: mode, amount: previewBalanceDue }];
+
+    // Only sent if a discount was actually keyed in — the backend skips
+    // discount application entirely when this is omitted.
+    const discount =
+      pendingDiscountAmount > 0
+        ? { type: discountType, amount: pendingDiscountAmount, reason: discountReason || undefined }
+        : undefined;
 
     // Capture this before the order drops off the active list on reload.
     const isTakeaway = selectedOrder?.orderType === "TAKEAWAY";
 
     try {
-      const data = await completeBilling(selectedOrderId, { payments });
+      const data = await completeBilling(selectedOrderId, { payments, discount });
 
       // Takeaway → Billing → Payment Completed → Send to Kitchen → Invoice.
       // Dine-in orders were already fired to the kitchen at placement, so
@@ -176,6 +214,9 @@ export default function Billings() {
     setSummary(null);
     setSentToKitchen(false);
     setKitchenError(null);
+    setDiscountType(null);
+    setDiscountValue("");
+    setDiscountReason("");
     selectOrder(null);
   }
 
@@ -286,6 +327,79 @@ export default function Billings() {
                 ))}
               </ul>
 
+              {!result && (
+                <div className="mb-4 rounded-xl border border-slate-200 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Discount</p>
+                    {discountType && (
+                      <button
+                        onClick={() => {
+                          setDiscountType(null);
+                          setDiscountValue("");
+                          setDiscountReason("");
+                        }}
+                        className="text-xs font-semibold text-slate-400 hover:text-slate-600"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      onClick={() => setDiscountType(discountType === "PERCENTAGE" ? null : "PERCENTAGE")}
+                      className={`flex-1 rounded-lg border py-1.5 text-sm font-semibold transition-colors ${
+                        discountType === "PERCENTAGE"
+                          ? "border-blue-600 bg-blue-600 text-white"
+                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      Percentage
+                    </button>
+                    <button
+                      onClick={() => setDiscountType(discountType === "FIXED_AMOUNT" ? null : "FIXED_AMOUNT")}
+                      className={`flex-1 rounded-lg border py-1.5 text-sm font-semibold transition-colors ${
+                        discountType === "FIXED_AMOUNT"
+                          ? "border-blue-600 bg-blue-600 text-white"
+                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      Amount
+                    </button>
+                  </div>
+                  {discountType && (
+                    <div className="mt-2 space-y-2">
+                      <div className="relative">
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">
+                          {discountType === "PERCENTAGE" ? "%" : "₹"}
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          max={discountType === "PERCENTAGE" ? 100 : undefined}
+                          value={discountValue}
+                          onChange={(e) => setDiscountValue(e.target.value)}
+                          placeholder={discountType === "PERCENTAGE" ? "e.g. 10" : "e.g. 50"}
+                          className="w-full rounded-lg border border-slate-200 py-1.5 pl-7 pr-3 text-sm outline-none focus:border-blue-400"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        value={discountReason}
+                        onChange={(e) => setDiscountReason(e.target.value)}
+                        placeholder="Reason (optional)"
+                        className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm outline-none focus:border-blue-400"
+                      />
+                      {pendingDiscountAmount > 0 && (
+                        <p className="text-xs font-medium text-emerald-600">
+                          −₹{pendingDiscountAmount.toFixed(2)} off this bill
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-1 border-t border-dashed border-slate-300 pt-3 font-mono text-sm text-slate-600">
                 <div className="flex justify-between">
                   <span>Subtotal</span>
@@ -301,13 +415,19 @@ export default function Billings() {
                 </div>
                 {summary.discountAmount > 0 && (
                   <div className="flex justify-between text-emerald-600">
-                    <span>Discount</span>
+                    <span>Discount already applied</span>
                     <span>−₹{summary.discountAmount.toFixed(2)}</span>
+                  </div>
+                )}
+                {pendingDiscountAmount > 0 && (
+                  <div className="flex justify-between text-emerald-600">
+                    <span>New discount</span>
+                    <span>−₹{pendingDiscountAmount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between border-t border-slate-200 pt-1.5 text-base font-bold text-slate-900">
                   <span>Grand Total</span>
-                  <span>₹{summary.grandTotal.toFixed(2)}</span>
+                  <span>₹{(result ? summary.grandTotal : previewGrandTotal).toFixed(2)}</span>
                 </div>
                 {summary.totalPaid > 0 && (
                   <div className="flex justify-between text-xs text-slate-400">
@@ -388,7 +508,7 @@ export default function Billings() {
                         + Add another payment
                       </button>
                       <p className={`text-xs font-medium ${splitMismatch ? "text-red-500" : "text-emerald-600"}`}>
-                        Split total: ₹{splitTotal.toFixed(2)} of ₹{summary.balanceDue.toFixed(2)} due
+                        Split total: ₹{splitTotal.toFixed(2)} of ₹{previewBalanceDue.toFixed(2)} due
                       </p>
                     </div>
                   )}
@@ -424,7 +544,7 @@ export default function Billings() {
                   disabled={processing || (mode === "SPLIT" && splitMismatch)}
                   className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
-                  {processing ? "Processing payment…" : `Complete Payment · ₹${summary.balanceDue.toFixed(2)}`}
+                  {processing ? "Processing payment…" : `Complete Payment · ₹${previewBalanceDue.toFixed(2)}`}
                 </button>
               </div>
             )}
