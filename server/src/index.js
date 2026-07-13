@@ -1,3 +1,4 @@
+// server/src/index.js
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -12,9 +13,10 @@ import employeeRoutes from "./employees/employees.routes.js";
 import posRoutes from "./pos/pos.routes.js";
 import kdsRoutes from "./kds/kds.routes.js";
 import storesRoutes from "./stores/stores.routes.js";
+import kioskRoutes from "./kiosk/kiosk.routes.js";
 
 const app = express();
-
+console.log("🚀 USING UPDATED INDEX.JS - KIOSK WITHOUT STAFF AUTH");
 app.use(
   cors({
     origin: process.env.CLIENT_ORIGIN,
@@ -40,6 +42,8 @@ app.use("/api/auth", authRoutes);
 // per-module based on who should reasonably touch that data; adjust as your
 // permission model firms up (these mirror the canX() helpers in AuthContext).
 // ==============================================
+app.use("/api/kiosk", kioskRoutes);
+
 app.use("/api", requireAuth, menuRoutes);
 app.use(
   "/api/inventory",
