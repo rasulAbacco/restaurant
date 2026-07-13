@@ -318,11 +318,6 @@ const waiterMenu = [
     icon: <FiCoffee />,
   },
   {
-    name: "Customers",
-    path: "/customers",
-    icon: <FiUsers />,
-  },
-  {
     name: "Billing",
     path: "/billing",
     icon: <FiFileText />,
