@@ -12,10 +12,7 @@ const ReportsRoutes = () => {
     <Routes>
       <Route index element={<ReportsDashboard />} />
 
-      <Route
-        path="*"
-        element={<Navigate to="/reports" replace />}
-      />
+      <Route path="*" element={<Navigate to="/reports" replace />} />
     </Routes>
   );
 };

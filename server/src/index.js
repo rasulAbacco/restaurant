@@ -15,7 +15,8 @@ import posRoutes from "./pos/pos.routes.js";
 import kdsRoutes from "./kds/kds.routes.js";
 import storesRoutes from "./stores/stores.routes.js";
 import kioskRoutes from "./kiosk/kiosk.routes.js";
-
+import ReportsRoutes from "./reports/reports.routes.js";
+import profitLossRoutes from "./profitLoss/profitLoss.routes.js";
 
 const app = express();
 console.log("🚀 USING UPDATED INDEX.JS - KIOSK WITHOUT STAFF AUTH");
@@ -50,45 +51,55 @@ app.use("/api", requireAuth, menuRoutes);
 app.use(
   "/api/inventory",
   requireAuth,
-  requireRole("OWNER", "MANAGER", "STORE_KEEPER"),
+  requireRole("OWNER", "ADMIN", "MANAGER", "STORE_KEEPER"),
   inventoryRoutes,
 );
 app.use(
   "/api/expenses",
   requireAuth,
-  requireRole("OWNER", "MANAGER"),
+  requireRole("OWNER", "ADMIN", "MANAGER"),
   expensesRoutes,
 );
 app.use(
   "/api/employees",
   requireAuth,
-  requireRole("OWNER", "MANAGER"),
+  requireRole("OWNER", "ADMIN", "MANAGER"),
   employeeRoutes,
 );
 app.use(
   "/api/pos/kot",
   requireAuth,
-  requireRole("OWNER", "MANAGER", "CASHIER", "KITCHEN", "WAITER"),
+  requireRole("OWNER", "ADMIN", "MANAGER", "CASHIER", "KITCHEN", "WAITER"),
   kotRoutes,
 );
 app.use(
   "/api/pos",
   requireAuth,
-  requireRole("OWNER", "MANAGER", "CASHIER","WAITER"),
+  requireRole("OWNER", "ADMIN", "MANAGER", "CASHIER", "WAITER"),
   posRoutes,
 );
 app.use(
   "/api/kds",
   requireAuth,
-  requireRole("OWNER", "MANAGER", "CHEF", "KITCHEN"),
+  requireRole("OWNER", "ADMIN", "MANAGER", "CHEF", "KITCHEN"),
   kdsRoutes,
 );
 app.use(
   "/api/stores",
   requireAuth,
-  requireRole("OWNER", "MANAGER"),
+  requireRole("OWNER", "ADMIN", "MANAGER"),
   storesRoutes,
 );
+app.use(
+  "/api/reports",
+  requireAuth,
+  requireRole("OWNER", "ADMIN", "MANAGER"),
+  ReportsRoutes,
+);
+
+// Profit & Loss — requireAuth only here; each route inside profitLossRoutes
+// applies its own role check (Owner/Admin full access, Manager summary-only)
+app.use("/api/profit-loss", requireAuth, profitLossRoutes);
 
 // ==============================================
 // FALLBACK ERROR HANDLER

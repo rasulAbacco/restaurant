@@ -70,7 +70,9 @@ export const findTableById = (id) =>
 export const findOrCreateCustomer = async ({ name, phone }) => {
   if (!phone) return null;
 
-  const existing = await prisma.customer.findUnique({ where: { mobile: phone } });
+  const existing = await prisma.customer.findUnique({
+    where: { mobile: phone },
+  });
   if (existing) {
     if (name && name.trim() && existing.name !== name.trim()) {
       return prisma.customer.update({
@@ -161,7 +163,8 @@ export const createOrderWithItems = ({
           })),
         },
         // Payment row is created up-front as UNPAID; the payment step
-        // (kiosk.service.confirmPayment) fills in method/status/txn ref.
+        // (kiosk.service.confirmPayment / Razorpay flows) fills in
+        // method/status/txn ref.
         payments: {
           create: [
             {
@@ -173,7 +176,9 @@ export const createOrderWithItems = ({
         },
       },
       include: {
-        items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+        items: {
+          include: { menuItem: true, addOns: { include: { addOn: true } } },
+        },
         table: true,
         customer: true,
         payments: true,
@@ -198,7 +203,9 @@ export const findOrderById = (id) =>
   prisma.order.findUnique({
     where: { id },
     include: {
-      items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+      items: {
+        include: { menuItem: true, addOns: { include: { addOn: true } } },
+      },
       table: true,
       customer: true,
       payments: true,
@@ -232,3 +239,17 @@ export const updatePayment = (id, data) =>
   prisma.payment.update({ where: { id }, data });
 
 export const createPayment = (data) => prisma.payment.create({ data });
+
+// Used by the Razorpay webhook: we store the Razorpay QR code id (for UPI)
+// or the Razorpay order id (for Card) in Payment.transactionReference when
+// we create it, so an incoming webhook event — which only gives us *their*
+// ids — can be traced back to our kiosk Order.
+export const findOrderByPaymentReference = async (reference) => {
+  if (!reference) return null;
+  const payment = await prisma.payment.findFirst({
+    where: { transactionReference: reference },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!payment) return null;
+  return prisma.order.findUnique({ where: { id: payment.orderId } });
+};

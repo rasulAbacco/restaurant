@@ -11,8 +11,14 @@ import {
   FiDollarSign,
   FiAlertCircle,
 } from "react-icons/fi";
-import { payOrder, KioskApiError } from "./services/kioskApi";
+import {
+  payOrder,
+  createCardOrder,
+  verifyCardPayment,
+  KioskApiError,
+} from "./services/kioskApi";
 import { LiaRupeeSignSolid } from "react-icons/lia";
+
 const METHODS = [
   {
     id: "UPI",
@@ -34,21 +40,39 @@ const METHODS = [
   },
 ];
 
+// Loads Razorpay's Checkout.js exactly once, however many times this gets
+// called — subsequent calls just resolve immediately once it's present.
+let razorpayScriptPromise = null;
+function loadRazorpayScript() {
+  if (window.Razorpay) return Promise.resolve(true);
+  if (razorpayScriptPromise) return razorpayScriptPromise;
+
+  razorpayScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.onload = () => resolve(true);
+    script.onerror = () => {
+      razorpayScriptPromise = null;
+      reject(
+        new Error("Could not load the payment gateway. Check your connection."),
+      );
+    };
+    document.body.appendChild(script);
+  });
+
+  return razorpayScriptPromise;
+}
+
 const KioskPaymentType = ({ order, onBack, onChooseQr, onPaid }) => {
   const [selected, setSelected] = useState("UPI");
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const handleCheckout = async () => {
-    if (selected === "UPI") {
-      onChooseQr();
-      return;
-    }
-
+  const handleCashCheckout = async () => {
     setSubmitting(true);
     setErrorMsg("");
     try {
-      const updated = await payOrder(order.id, { method: selected });
+      const updated = await payOrder(order.id, { method: "CASH" });
       onPaid(updated);
     } catch (err) {
       setErrorMsg(
@@ -59,6 +83,77 @@ const KioskPaymentType = ({ order, onBack, onChooseQr, onPaid }) => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // Card payment: create a Razorpay Order server-side, open Checkout.js
+  // right here on the kiosk screen (test mode accepts Razorpay's published
+  // test card numbers, e.g. 4111 1111 1111 1111 / any future expiry / any
+  // CVV), then verify the signature server-side before treating it as paid.
+  const handleCardCheckout = async () => {
+    setSubmitting(true);
+    setErrorMsg("");
+    try {
+      await loadRazorpayScript();
+
+      const rpOrder = await createCardOrder(order.id);
+
+      const rzp = new window.Razorpay({
+        key: rpOrder.keyId,
+        order_id: rpOrder.razorpayOrderId,
+        amount: rpOrder.amount,
+        currency: rpOrder.currency,
+        name: "Restaurant",
+        description: `Order ${rpOrder.orderNumber}`,
+        theme: { color: "#EE6C2E" },
+        handler: async (response) => {
+          try {
+            const updated = await verifyCardPayment(order.id, {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+            onPaid(updated);
+          } catch (err) {
+            setErrorMsg(
+              err instanceof KioskApiError
+                ? err.message
+                : "Payment succeeded but could not be verified. Please contact staff.",
+            );
+          } finally {
+            setSubmitting(false);
+          }
+        },
+        modal: {
+          // User closed the Checkout popup without paying.
+          ondismiss: () => setSubmitting(false),
+        },
+      });
+
+      rzp.on("payment.failed", (response) => {
+        setErrorMsg(
+          response?.error?.description ||
+            "Card payment failed. Please try again.",
+        );
+        setSubmitting(false);
+      });
+
+      rzp.open();
+    } catch (err) {
+      setErrorMsg(err.message || "Could not start card payment.");
+      setSubmitting(false);
+    }
+  };
+
+  const handleCheckout = () => {
+    if (selected === "UPI") {
+      onChooseQr();
+      return;
+    }
+    if (selected === "CARD") {
+      handleCardCheckout();
+      return;
+    }
+    handleCashCheckout();
   };
 
   return (
@@ -189,6 +284,15 @@ const KioskPaymentType = ({ order, onBack, onChooseQr, onPaid }) => {
                 strokeWidth={2.5}
               />
               <p className="text-xs font-bold leading-relaxed">{errorMsg}</p>
+            </div>
+          )}
+
+          {selected === "CARD" && (
+            <div className="mt-6 rounded-2xl bg-blue-50 border border-blue-200/60 p-4 text-blue-700">
+              <p className="text-xs font-bold leading-relaxed">
+                Test mode — use card number 4111 1111 1111 1111, any future
+                expiry date, and any 3-digit CVV.
+              </p>
             </div>
           )}
         </div>

@@ -1,0 +1,844 @@
+// src/reports/reports.service.js
+// ==============================================
+// Reports Service
+// All Prisma queries + aggregation logic for the Reports & Analytics module.
+// Keep this file free of req/res — controllers own HTTP concerns.
+// ==============================================
+
+import { PrismaClient } from "@prisma/client";
+
+// Reuse a single PrismaClient instance across the app in dev to avoid
+// exhausting DB connections on hot-reload. Swap this for your shared
+// `prisma` singleton if one already exists in your project (e.g. ../lib/prisma).
+const globalForPrisma = globalThis;
+const prisma = globalForPrisma.__reportsPrisma || new PrismaClient();
+if (process.env.NODE_ENV !== "production")
+  globalForPrisma.__reportsPrisma = prisma;
+
+// ─────────────────────────────────────────────
+// FILTER / DATE HELPERS
+// ─────────────────────────────────────────────
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function endOfDay(d) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
+function getDateRange(period, startDate, endDate) {
+  if (startDate && endDate) {
+    return {
+      start: startOfDay(new Date(startDate)),
+      end: endOfDay(new Date(endDate)),
+    };
+  }
+
+  const now = new Date();
+  const p = (period || "today").toLowerCase().replace(/\s+/g, "");
+
+  if (p === "thisweek" || p === "week") {
+    const day = now.getDay(); // 0 = Sunday
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    const start = startOfDay(new Date(now));
+    start.setDate(start.getDate() - diffToMonday);
+    return { start, end: endOfDay(now) };
+  }
+
+  if (p === "thismonth" || p === "month") {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { start: startOfDay(start), end: endOfDay(now) };
+  }
+
+  if (p === "thisyear" || p === "year") {
+    const start = new Date(now.getFullYear(), 0, 1);
+    return { start: startOfDay(start), end: endOfDay(now) };
+  }
+
+  // default: today
+  return { start: startOfDay(now), end: endOfDay(now) };
+}
+
+function getPreviousRange(start, end) {
+  const durationMs = end.getTime() - start.getTime();
+  const prevEnd = new Date(start.getTime() - 1);
+  const prevStart = new Date(prevEnd.getTime() - durationMs);
+  return { start: prevStart, end: prevEnd };
+}
+
+/**
+ * Normalizes raw req.query into a filters object used throughout the service.
+ * Any "All X" placeholder value coming from a <select> is treated as "no filter".
+ */
+function parseFilters(query = {}) {
+  const {
+    period,
+    startDate,
+    endDate,
+    store,
+    orderType,
+    paymentMethod,
+    category,
+    search,
+    granularity,
+    page,
+    pageSize,
+    limit,
+  } = query;
+
+  const { start, end } = getDateRange(period, startDate, endDate);
+
+  const clean = (v) => (v && !/^all/i.test(v) ? v : undefined);
+
+  return {
+    start,
+    end,
+    period: period || "today",
+    store: clean(store),
+    orderType: clean(orderType),
+    paymentMethod: clean(paymentMethod),
+    category: clean(category),
+    search: search && search.trim() ? search.trim() : undefined,
+    granularity: granularity || "daily",
+    page: Math.max(1, parseInt(page, 10) || 1),
+    pageSize: Math.min(100, Math.max(1, parseInt(pageSize, 10) || 10)),
+    limit: Math.min(500, Math.max(1, parseInt(limit, 10) || 10)),
+  };
+}
+
+function buildOrderWhere(filters, { includeAllStatuses = false } = {}) {
+  const where = { createdAt: { gte: filters.start, lte: filters.end } };
+  if (filters.store) where.store = filters.store;
+  if (filters.orderType) where.orderType = filters.orderType;
+  if (!includeAllStatuses) where.status = { notIn: ["CANCELLED"] };
+  return where;
+}
+
+function buildExpenseWhere(filters) {
+  const where = {
+    expenseDate: { gte: filters.start, lte: filters.end },
+    status: { not: "REJECTED" },
+  };
+  if (filters.store) where.store = filters.store;
+  return where;
+}
+
+const num = (v) => Number(v || 0);
+const pctChange = (curr, prev) =>
+  prev === 0 ? (curr > 0 ? 100 : 0) : ((curr - prev) / prev) * 100;
+
+// ─────────────────────────────────────────────
+// SALES SUMMARY (primary + secondary KPIs)
+// ─────────────────────────────────────────────
+
+async function getCOGS(orderWhere) {
+  const items = await prisma.orderItem.findMany({
+    where: { order: orderWhere },
+    select: { quantity: true, menuItem: { select: { costPrice: true } } },
+  });
+  return items.reduce(
+    (sum, it) => sum + num(it.menuItem?.costPrice) * it.quantity,
+    0,
+  );
+}
+
+async function getSalesSummary(filters) {
+  const where = buildOrderWhere(filters);
+
+  const [currentAgg, cogs, expenseAgg, distinctCustomers] = await Promise.all([
+    prisma.order.aggregate({
+      where,
+      _sum: { grandTotal: true, gstAmount: true },
+      _count: { id: true },
+    }),
+    getCOGS(where),
+    prisma.expense.aggregate({
+      where: buildExpenseWhere(filters),
+      _sum: { totalPaid: true },
+    }),
+    prisma.order.findMany({
+      where: { ...where, customerId: { not: null } },
+      select: { customerId: true },
+      distinct: ["customerId"],
+    }),
+  ]);
+
+  const prevRange = getPreviousRange(filters.start, filters.end);
+  const prevWhere = buildOrderWhere({
+    ...filters,
+    start: prevRange.start,
+    end: prevRange.end,
+  });
+  const prevAgg = await prisma.order.aggregate({
+    where: prevWhere,
+    _sum: { grandTotal: true },
+    _count: { id: true },
+  });
+
+  const revenue = num(currentAgg._sum.grandTotal);
+  const orders = currentAgg._count.id;
+  const gst = num(currentAgg._sum.gstAmount);
+  const expenses = num(expenseAgg._sum.totalPaid);
+  const netProfit = revenue - cogs - expenses;
+  const avgBill = orders ? revenue / orders : 0;
+
+  const prevRevenue = num(prevAgg._sum.grandTotal);
+  const prevOrders = prevAgg._count.id;
+  const prevAvgBill = prevOrders ? prevRevenue / prevOrders : 0;
+
+  return {
+    revenue,
+    orders,
+    netProfit,
+    avgBill,
+    gst,
+    customers: distinctCustomers.length,
+    changes: {
+      revenuePct: pctChange(revenue, prevRevenue),
+      ordersDelta: orders - prevOrders,
+      netProfitPct: pctChange(netProfit, prevRevenue - cogs - expenses),
+      avgBillPct: pctChange(avgBill, prevAvgBill),
+    },
+  };
+}
+
+async function getInventoryValue() {
+  const stocks = await prisma.inventoryStock.findMany({
+    select: { quantityOnHand: true, averageCost: true },
+  });
+  return stocks.reduce(
+    (sum, s) => sum + num(s.quantityOnHand) * num(s.averageCost),
+    0,
+  );
+}
+
+// ─────────────────────────────────────────────
+// SALES TREND
+// ─────────────────────────────────────────────
+
+function bucketKey(date, granularity) {
+  const d = new Date(date);
+  if (granularity === "monthly")
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  if (granularity === "weekly") {
+    const oneJan = new Date(d.getFullYear(), 0, 1);
+    const week = Math.ceil(((d - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
+    return `${d.getFullYear()}-W${week}`;
+  }
+  return d.toISOString().slice(0, 10); // daily
+}
+
+async function getSalesTrend(filters) {
+  const where = buildOrderWhere(filters);
+  const orders = await prisma.order.findMany({
+    where,
+    select: { createdAt: true, grandTotal: true },
+  });
+
+  const map = new Map();
+  for (const o of orders) {
+    const key = bucketKey(o.createdAt, filters.granularity);
+    const entry = map.get(key) || { label: key, revenue: 0, orders: 0 };
+    entry.revenue += num(o.grandTotal);
+    entry.orders += 1;
+    map.set(key, entry);
+  }
+  return Array.from(map.values()).sort((a, b) => (a.label > b.label ? 1 : -1));
+}
+
+// ─────────────────────────────────────────────
+// ORDER TYPE BREAKDOWN
+// ─────────────────────────────────────────────
+
+async function getOrderTypeBreakdown(filters) {
+  const where = buildOrderWhere(filters);
+  const grouped = await prisma.order.groupBy({
+    by: ["orderType"],
+    where,
+    _sum: { grandTotal: true },
+    _count: { id: true },
+  });
+  const total = grouped.reduce((s, g) => s + num(g._sum.grandTotal), 0);
+  return grouped
+    .map((g) => ({
+      orderType: g.orderType,
+      revenue: num(g._sum.grandTotal),
+      orders: g._count.id,
+      pct: total ? Math.round((num(g._sum.grandTotal) / total) * 100) : 0,
+    }))
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
+// ─────────────────────────────────────────────
+// CATEGORY PERFORMANCE
+// ─────────────────────────────────────────────
+
+async function getCategoryPerformance(filters) {
+  const where = buildOrderWhere(filters);
+  const items = await prisma.orderItem.findMany({
+    where: { order: where },
+    select: {
+      orderId: true,
+      quantity: true,
+      totalPrice: true,
+      menuItem: {
+        select: { costPrice: true, category: { select: { name: true } } },
+      },
+    },
+  });
+
+  const map = new Map();
+  for (const it of items) {
+    const catName = it.menuItem?.category?.name || "Uncategorized";
+    if (filters.category && filters.category !== catName) continue;
+    const entry = map.get(catName) || {
+      category: catName,
+      revenue: 0,
+      orders: new Set(),
+      profit: 0,
+    };
+    entry.revenue += num(it.totalPrice);
+    entry.orders.add(it.orderId);
+    entry.profit +=
+      num(it.totalPrice) - num(it.menuItem?.costPrice) * it.quantity;
+    map.set(catName, entry);
+  }
+
+  const arr = Array.from(map.values()).map((e) => ({
+    category: e.category,
+    revenue: e.revenue,
+    orders: e.orders.size,
+    profit: e.profit,
+  }));
+  const maxRevenue = Math.max(1, ...arr.map((a) => a.revenue), 0);
+  return arr
+    .sort((a, b) => b.revenue - a.revenue)
+    .map((a) => ({ ...a, pct: Math.round((a.revenue / maxRevenue) * 100) }));
+}
+
+// ─────────────────────────────────────────────
+// PAYMENT DISTRIBUTION
+// ─────────────────────────────────────────────
+
+async function getPaymentDistribution(filters) {
+  const where = { status: "PAID", order: buildOrderWhere(filters) };
+  if (filters.paymentMethod) where.method = filters.paymentMethod;
+
+  const grouped = await prisma.payment.groupBy({
+    by: ["method"],
+    where,
+    _sum: { amount: true },
+    _count: { id: true },
+  });
+  const total = grouped.reduce((s, g) => s + num(g._sum.amount), 0);
+  return grouped
+    .map((g) => ({
+      method: g.method,
+      amount: num(g._sum.amount),
+      count: g._count.id,
+      pct: total ? Math.round((num(g._sum.amount) / total) * 100) : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+// ─────────────────────────────────────────────
+// TOP SELLING ITEMS
+// ─────────────────────────────────────────────
+
+async function getTopSellingItems(filters) {
+  const where = buildOrderWhere(filters);
+  const grouped = await prisma.orderItem.groupBy({
+    by: ["menuItemId"],
+    where: { order: where },
+    _sum: { quantity: true, totalPrice: true },
+    orderBy: { _sum: { quantity: "desc" } },
+    take: filters.limit || 10,
+  });
+
+  const menuItemIds = grouped.map((g) => g.menuItemId);
+  const menuItems = await prisma.menuItem.findMany({
+    where: { id: { in: menuItemIds } },
+    select: { id: true, name: true, costPrice: true },
+  });
+  const menuMap = new Map(menuItems.map((m) => [m.id, m]));
+  const maxQty = Math.max(1, ...grouped.map((g) => g._sum.quantity || 0), 0);
+
+  return grouped.map((g) => {
+    const mi = menuMap.get(g.menuItemId);
+    const qty = g._sum.quantity || 0;
+    const revenue = num(g._sum.totalPrice);
+    const cost = num(mi?.costPrice) * qty;
+    return {
+      item: mi?.name || "Unknown item",
+      qty,
+      revenue,
+      profit: revenue - cost,
+      pct: Math.round((qty / maxQty) * 100),
+    };
+  });
+}
+
+// ─────────────────────────────────────────────
+// EXPENSE BREAKDOWN
+// ─────────────────────────────────────────────
+
+async function getExpenseBreakdown(filters) {
+  const grouped = await prisma.expense.groupBy({
+    by: ["categoryId"],
+    where: buildExpenseWhere(filters),
+    _sum: { totalPaid: true },
+  });
+  const categoryIds = grouped.map((g) => g.categoryId);
+  const categories = await prisma.expenseCategory.findMany({
+    where: { id: { in: categoryIds } },
+    select: { id: true, name: true },
+  });
+  const catMap = new Map(categories.map((c) => [c.id, c.name]));
+  const total = grouped.reduce((s, g) => s + num(g._sum.totalPaid), 0);
+
+  return grouped
+    .map((g) => ({
+      name: catMap.get(g.categoryId) || "Other",
+      amount: num(g._sum.totalPaid),
+      pct: total ? Math.round((num(g._sum.totalPaid) / total) * 100) : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+// ─────────────────────────────────────────────
+// EMPLOYEE PERFORMANCE (waiters, via Order.waiterId)
+// ─────────────────────────────────────────────
+
+async function getEmployeePerformance(filters) {
+  const where = { ...buildOrderWhere(filters), waiterId: { not: null } };
+  const grouped = await prisma.order.groupBy({
+    by: ["waiterId"],
+    where,
+    _sum: { grandTotal: true },
+    _count: { id: true },
+    orderBy: { _sum: { grandTotal: "desc" } },
+    take: filters.limit || 10,
+  });
+
+  const ids = grouped.map((g) => g.waiterId);
+  const employees = await prisma.employee.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, fullName: true, designation: true },
+  });
+  const empMap = new Map(employees.map((e) => [e.id, e]));
+  const maxOrders = Math.max(1, ...grouped.map((g) => g._count.id), 0);
+
+  return grouped.map((g) => {
+    const emp = empMap.get(g.waiterId);
+    return {
+      name: emp?.fullName || "Unknown",
+      role: emp?.designation || "-",
+      orders: g._count.id,
+      sales: num(g._sum.grandTotal),
+      pct: Math.round((g._count.id / maxOrders) * 100),
+    };
+  });
+}
+
+// ─────────────────────────────────────────────
+// CUSTOMER ANALYTICS
+// ─────────────────────────────────────────────
+
+async function getCustomerAnalytics(filters) {
+  const where = { ...buildOrderWhere(filters), customerId: { not: null } };
+  const [distinctOrders, topCustomerGroup] = await Promise.all([
+    prisma.order.findMany({ where, select: { customerId: true } }),
+    prisma.order.groupBy({
+      by: ["customerId"],
+      where,
+      _sum: { grandTotal: true },
+      _count: { id: true },
+      orderBy: { _sum: { grandTotal: "desc" } },
+      take: 1,
+    }),
+  ]);
+
+  const customerIds = [...new Set(distinctOrders.map((o) => o.customerId))];
+  const customers = await prisma.customer.findMany({
+    where: { id: { in: customerIds } },
+    select: { id: true, name: true, createdAt: true, loyaltyPoints: true },
+  });
+  const custMap = new Map(customers.map((c) => [c.id, c]));
+
+  let newCount = 0;
+  let returningCount = 0;
+  let loyalCount = 0;
+  for (const id of customerIds) {
+    const c = custMap.get(id);
+    if (!c) continue;
+    if (c.createdAt >= filters.start) newCount++;
+    else returningCount++;
+    if (c.loyaltyPoints >= 500) loyalCount++;
+  }
+
+  const inactiveCount = await prisma.customer.count({
+    where: { id: { notIn: customerIds } },
+  });
+
+  let topCustomer = null;
+  if (topCustomerGroup.length) {
+    const g = topCustomerGroup[0];
+    const c = custMap.get(g.customerId);
+    topCustomer = {
+      name: c?.name || "Unknown",
+      orders: g._count.id,
+      sales: num(g._sum.grandTotal),
+      loyaltyPoints: c?.loyaltyPoints || 0,
+    };
+  }
+
+  return {
+    total: customerIds.length,
+    new: newCount,
+    returning: returningCount,
+    loyal: loyalCount,
+    inactive: inactiveCount,
+    topCustomer,
+  };
+}
+
+// ─────────────────────────────────────────────
+// INVENTORY ALERTS
+// ─────────────────────────────────────────────
+
+async function getInventoryAlerts(limit = 20) {
+  const alerts = await prisma.inventoryAlert.findMany({
+    where: { isResolved: false },
+    include: {
+      ingredient: {
+        select: {
+          name: true,
+          consumptionUnit: { select: { abbreviation: true, name: true } },
+          inventoryStock: { select: { quantityOnHand: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+
+  const severityMap = {
+    OUT_OF_STOCK: "critical",
+    EXPIRED: "critical",
+    LOW_STOCK: "high",
+    EXPIRING_SOON: "medium",
+  };
+
+  return alerts.map((a) => ({
+    item: a.ingredient?.name || "Unknown",
+    stock: `${a.ingredient?.inventoryStock?.quantityOnHand ?? 0} ${
+      a.ingredient?.consumptionUnit?.abbreviation ||
+      a.ingredient?.consumptionUnit?.name ||
+      ""
+    }`.trim(),
+    status: a.type.replace(/_/g, " "),
+    severity: severityMap[a.type] || "medium",
+    message: a.message,
+  }));
+}
+
+// ─────────────────────────────────────────────
+// KITCHEN PERFORMANCE
+// ─────────────────────────────────────────────
+
+async function getKitchenPerformance(filters) {
+  const where = { createdAt: { gte: filters.start, lte: filters.end } };
+  if (filters.store) where.order = { store: filters.store };
+
+  const kots = await prisma.kitchenOrder.findMany({
+    where,
+    select: { status: true, createdAt: true, readyAt: true },
+  });
+
+  let prepared = 0;
+  let pending = 0;
+  let cancelled = 0;
+  let totalPrepMinutes = 0;
+  let preparedWithTime = 0;
+
+  for (const k of kots) {
+    if (["COMPLETED", "SERVED", "READY"].includes(k.status)) {
+      prepared++;
+      if (k.readyAt) {
+        totalPrepMinutes += (k.readyAt - k.createdAt) / 60000;
+        preparedWithTime++;
+      }
+    } else if (k.status === "CANCELLED") {
+      cancelled++;
+    } else {
+      pending++;
+    }
+  }
+
+  return {
+    prepared,
+    pending,
+    cancelled,
+    avgTimeMinutes: preparedWithTime
+      ? Math.round(totalPrepMinutes / preparedWithTime)
+      : 0,
+  };
+}
+
+// ─────────────────────────────────────────────
+// RECENT TRANSACTIONS (paginated)
+// ─────────────────────────────────────────────
+
+async function getRecentTransactions(filters) {
+  const where = buildOrderWhere(filters, { includeAllStatuses: true });
+
+  if (filters.search) {
+    where.OR = [
+      { orderNumber: { contains: filters.search, mode: "insensitive" } },
+      { customer: { name: { contains: filters.search, mode: "insensitive" } } },
+    ];
+  }
+  if (filters.paymentMethod) {
+    where.payments = { some: { method: filters.paymentMethod } };
+  }
+
+  const [orders, total] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      include: {
+        customer: { select: { name: true } },
+        payments: {
+          select: { method: true, status: true },
+          take: 1,
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: (filters.page - 1) * filters.pageSize,
+      take: filters.pageSize,
+    }),
+    prisma.order.count({ where }),
+  ]);
+
+  const rows = orders.map((o) => ({
+    invoice: o.orderNumber,
+    customer: o.customer?.name || "Walk-in",
+    type: o.orderType,
+    payment: o.payments[0]?.method || "-",
+    amount: num(o.grandTotal),
+    status: o.payments[0]?.status || o.status,
+    time: o.createdAt,
+  }));
+
+  return { rows, total, page: filters.page, pageSize: filters.pageSize };
+}
+
+// ─────────────────────────────────────────────
+// REFUNDS + DISCOUNTS (for business summary)
+// ─────────────────────────────────────────────
+
+async function getRefundsAndDiscounts(filters) {
+  const [refundAgg, discountAgg] = await Promise.all([
+    prisma.order.aggregate({
+      where: {
+        ...buildOrderWhere(filters, { includeAllStatuses: true }),
+        status: "REFUNDED",
+      },
+      _sum: { grandTotal: true },
+    }),
+    prisma.orderDiscount.aggregate({
+      where: { order: buildOrderWhere(filters, { includeAllStatuses: true }) },
+      _sum: { amountDeducted: true },
+    }),
+  ]);
+  return {
+    refunds: num(refundAgg._sum.grandTotal),
+    discounts: num(discountAgg._sum.amountDeducted),
+  };
+}
+
+// ─────────────────────────────────────────────
+// DASHBOARD AGGREGATOR (single round trip for the UI)
+// ─────────────────────────────────────────────
+
+async function getDashboard(filters) {
+  const [
+    summary,
+    salesTrend,
+    orderTypeBreakdown,
+    categoryPerformance,
+    paymentDistribution,
+    topSellingItems,
+    expenseBreakdown,
+    employeePerformance,
+    customerAnalytics,
+    inventoryAlerts,
+    kitchenPerformance,
+    recentTransactions,
+    inventoryValue,
+    refundsDiscounts,
+  ] = await Promise.all([
+    getSalesSummary(filters),
+    getSalesTrend(filters),
+    getOrderTypeBreakdown(filters),
+    getCategoryPerformance(filters),
+    getPaymentDistribution(filters),
+    getTopSellingItems({ ...filters, limit: 5 }),
+    getExpenseBreakdown(filters),
+    getEmployeePerformance({ ...filters, limit: 5 }),
+    getCustomerAnalytics(filters),
+    getInventoryAlerts(5),
+    getKitchenPerformance(filters),
+    getRecentTransactions({ ...filters, page: 1, pageSize: 5 }),
+    getInventoryValue(),
+    getRefundsAndDiscounts(filters),
+  ]);
+
+  const businessSummary = {
+    bestItem: topSellingItems[0]?.item || "-",
+    bestCategory: categoryPerformance[0]?.category || "-",
+    refunds: refundsDiscounts.refunds,
+    discounts: refundsDiscounts.discounts,
+    netMargin: summary.revenue
+      ? Math.round((summary.netProfit / summary.revenue) * 1000) / 10
+      : 0,
+    growthPct: summary.changes.revenuePct,
+  };
+
+  return {
+    summary: { ...summary, inventoryValue },
+    salesTrend,
+    orderTypeBreakdown,
+    categoryPerformance,
+    paymentDistribution,
+    topSellingItems,
+    expenseBreakdown,
+    employeePerformance,
+    customerAnalytics,
+    inventoryAlerts,
+    kitchenPerformance,
+    recentTransactions,
+    businessSummary,
+  };
+}
+
+// ─────────────────────────────────────────────
+// EXPORT: raw row fetchers + CSV / XLSX serializers
+// ─────────────────────────────────────────────
+
+async function getExportData(reportType, filters) {
+  switch (reportType) {
+    case "transactions": {
+      const { rows } = await getRecentTransactions({
+        ...filters,
+        page: 1,
+        pageSize: filters.limit || 1000,
+      });
+      return rows;
+    }
+    case "top-selling":
+      return getTopSellingItems({ ...filters, limit: filters.limit || 200 });
+    case "category-performance":
+      return getCategoryPerformance(filters);
+    case "payment-distribution":
+      return getPaymentDistribution(filters);
+    case "expense-breakdown":
+      return getExpenseBreakdown(filters);
+    case "employee-performance":
+      return getEmployeePerformance({
+        ...filters,
+        limit: filters.limit || 200,
+      });
+    case "inventory-alerts":
+      return getInventoryAlerts(filters.limit || 200);
+    case "sales-trend":
+      return getSalesTrend(filters);
+    case "order-type-breakdown":
+      return getOrderTypeBreakdown(filters);
+    case "customer-analytics": {
+      const analytics = await getCustomerAnalytics(filters);
+      return [analytics]; // single summary row
+    }
+    default:
+      throw new Error(`Unknown report type for export: ${reportType}`);
+  }
+}
+
+function toCSV(rows) {
+  if (!rows || !rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const escape = (val) => {
+    if (val === null || val === undefined) return "";
+    const str = val instanceof Date ? val.toISOString() : String(val);
+    if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+    return str;
+  };
+  const lines = [headers.join(",")];
+  for (const row of rows)
+    lines.push(headers.map((h) => escape(row[h])).join(","));
+  return lines.join("\n");
+}
+
+async function toExcelBuffer(rows, sheetName = "Report") {
+  let ExcelJS;
+  try {
+    // Lazy require so the app doesn't crash if xlsx export isn't used.
+    // Install with: npm install exceljs
+    ExcelJS = require("exceljs");
+  } catch (e) {
+    const err = new Error(
+      "Excel export requires the 'exceljs' package. Run `npm install exceljs`.",
+    );
+    err.statusCode = 501;
+    throw err;
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet(sheetName.slice(0, 31) || "Report");
+
+  if (rows && rows.length) {
+    sheet.columns = Object.keys(rows[0]).map((key) => ({
+      header: key.charAt(0).toUpperCase() + key.slice(1),
+      key,
+      width: 22,
+    }));
+    sheet.addRows(rows);
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE8F5E9" },
+    };
+  }
+
+  return workbook.xlsx.writeBuffer();
+}
+
+export default {
+  prisma,
+  parseFilters,
+  getDateRange,
+  getSalesSummary,
+  getSalesTrend,
+  getOrderTypeBreakdown,
+  getCategoryPerformance,
+  getPaymentDistribution,
+  getTopSellingItems,
+  getExpenseBreakdown,
+  getEmployeePerformance,
+  getCustomerAnalytics,
+  getInventoryAlerts,
+  getKitchenPerformance,
+  getRecentTransactions,
+  getInventoryValue,
+  getRefundsAndDiscounts,
+  getDashboard,
+  getExportData,
+  toCSV,
+  toExcelBuffer,
+};

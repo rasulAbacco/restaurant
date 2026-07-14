@@ -200,7 +200,7 @@ const KioskHome = () => {
   const idleTimer = useRef(null);
 
   useEffect(() => {
-    const IDLE_TIMEOUT = 60000; // 1 minute
+    const IDLE_TIMEOUT = 60000 * 15; // 1 minute
 
     const resetTimer = () => {
       clearTimeout(idleTimer.current);

@@ -165,11 +165,11 @@ const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
       external: true,
     },
 
-    {
-      name: "Settings",
-      path: "/settings",
-      icon: <FiSettings />,
-    },
+    // {
+    //   name: "Settings",
+    //   path: "/settings",
+    //   icon: <FiSettings />,
+    // },
   ];
 
   // =====================================================
@@ -340,11 +340,11 @@ const waiterMenu = [
       icon: <FiCoffee />,
     },
 
-    {
-      name: "Kitchen Notes",
-      path: "/kitchen/notes",
-      icon: <FiFileText />,
-    },
+    // {
+    //   name: "Kitchen Notes",
+    //   path: "/kitchen/notes",
+    //   icon: <FiFileText />,
+    // },
 
     {
       name: "Menu",
