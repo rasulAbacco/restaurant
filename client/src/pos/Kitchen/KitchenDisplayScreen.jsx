@@ -1,6 +1,6 @@
 //client\src\pos\Kitchen\KitchenDisplayScreen.jsx
 import { useCallback, useEffect, useMemo, useState } from "react";
-import KotCard from "./KotCard";
+import KotCard from "./Kotcard";
 import { getKitchenDisplay, updateKotStatus, addKitchenNote } from "../api/posApi";
 import { useAuth } from "../../auth/AuthContext";
 
