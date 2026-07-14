@@ -4,11 +4,24 @@
 // and how much payment came in vs is still pending, for a chosen day/range.
 // Pulls from GET /pos/orders (via posApi.getOrders), which already supports
 // from/to filtering on createdAt server-side (see pos.service.js listOrders).
+//
+// Excel export: uses ExcelJS (client-side) so the download gets real
+// formatting — bold header row, currency number formats, colored payment
+// status, a totals row with live SUM formulas — instead of a plain CSV.
+// Requires `npm install exceljs` in this project.
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ExcelJS from "exceljs";
 import { getOrders } from "../pos/api/posApi";
 
 const COMPLETED_ORDER_STATUSES = ["COMPLETED"];
 const CANCELLED_ORDER_STATUSES = ["CANCELLED", "REFUNDED"];
+
+const BRAND_DARK = "FF1C3044";
+const BORDER_LIGHT = "FFE2E8F0";
+const GREEN = "FF059669";
+const AMBER = "FFD97706";
+const RED = "FFDC2626";
+const GREY = "FF94A3B8";
 
 function todayRange() {
   const now = new Date();
@@ -37,6 +50,16 @@ function orderPaidAmount(order) {
 
 function orderBalanceDue(order) {
   return Math.max(Number(order.grandTotal) - orderPaidAmount(order), 0);
+}
+
+function paymentLabelFor(order) {
+  const paid = orderPaidAmount(order);
+  const due = orderBalanceDue(order);
+  const isCancelled = CANCELLED_ORDER_STATUSES.includes(order.status);
+  if (isCancelled) return "—";
+  if (due <= 0) return "Paid";
+  if (paid > 0) return "Partial";
+  return "Pending";
 }
 
 const PRESETS = [
@@ -73,6 +96,7 @@ export default function Payment() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback((fromDate, toDate) => {
     setLoading(true);
@@ -135,6 +159,171 @@ export default function Payment() {
     };
   }, [orders]);
 
+  // Builds a formatted .xlsx of exactly what's on screen — same date range,
+  // same summary numbers, same order rows — and triggers a browser download.
+  async function handleExportExcel() {
+    setExporting(true);
+    setError(null);
+    try {
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = "POS";
+      workbook.created = new Date();
+
+      const sheet = workbook.addWorksheet("Payments", {
+        pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1 },
+        views: [{ showGridLines: false }],
+      });
+
+      sheet.columns = [
+        { width: 18 }, // Order
+        { width: 22 }, // Table / Type
+        { width: 14 }, // Status
+        { width: 16 }, // Grand Total
+        { width: 16 }, // Paid
+        { width: 16 }, // Balance
+        { width: 12 }, // Payment
+      ];
+
+      // ---- Title ----
+      sheet.mergeCells("A1:G1");
+      const titleCell = sheet.getCell("A1");
+      titleCell.value = "Payments Report";
+      titleCell.font = { name: "Arial", size: 16, bold: true, color: { argb: BRAND_DARK } };
+      sheet.getRow(1).height = 26;
+
+      sheet.mergeCells("A2:G2");
+      const rangeCell = sheet.getCell("A2");
+      rangeCell.value = from === to ? `Date: ${from}` : `Date Range: ${from} to ${to}`;
+      rangeCell.font = { name: "Arial", size: 11, italic: true, color: { argb: GREY } };
+
+      // ---- Summary block ----
+      let r = 4;
+      sheet.getCell(`A${r}`).value = "Summary";
+      sheet.getCell(`A${r}`).font = { name: "Arial", bold: true, size: 12, color: { argb: BRAND_DARK } };
+      r++;
+
+      const summaryRows = [
+        ["Total Orders", stats.totalOrders, null],
+        ["Orders Completed", stats.ordersCompleted, null],
+        ["Orders Pending", stats.ordersPending, null],
+        ["Orders Cancelled", stats.ordersCancelled, null],
+        ["Payments Completed", stats.paymentsCompletedAmount, stats.paymentsCompletedCount],
+        ["Payments Pending", stats.paymentsPendingAmount, stats.paymentsPendingCount],
+      ];
+
+      summaryRows.forEach(([label, value, count]) => {
+        sheet.getCell(`A${r}`).value = label;
+        sheet.getCell(`A${r}`).font = { name: "Arial", bold: true };
+
+        const valueCell = sheet.getCell(`B${r}`);
+        valueCell.value = Number(value) || 0;
+        if (label.startsWith("Payments")) {
+          valueCell.numFmt = '"₹"#,##0.00';
+        }
+        valueCell.font = { name: "Arial" };
+
+        if (count !== null && count !== undefined) {
+          const countCell = sheet.getCell(`C${r}`);
+          countCell.value = `${count} order${count === 1 ? "" : "s"}`;
+          countCell.font = { name: "Arial", italic: true, color: { argb: GREY } };
+        }
+        r++;
+      });
+
+      r += 1; // blank spacer row
+
+      // ---- Orders table ----
+      const headers = ["Order", "Table / Type", "Status", "Grand Total", "Paid", "Balance", "Payment"];
+      const headerRowNum = r;
+      const headerRow = sheet.getRow(headerRowNum);
+      headers.forEach((h, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = h;
+        cell.font = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BRAND_DARK } };
+        cell.alignment = { horizontal: i >= 3 ? "right" : "left", vertical: "middle" };
+      });
+      headerRow.height = 20;
+      r++;
+
+      const dataStartRow = r;
+      orders.forEach((order) => {
+        const paid = orderPaidAmount(order);
+        const due = orderBalanceDue(order);
+        const paymentLabel = paymentLabelFor(order);
+
+        const row = sheet.getRow(r);
+        row.getCell(1).value = order.orderNumber;
+        row.getCell(2).value = order.table?.name || (order.orderType || "").replace("_", " ");
+        row.getCell(3).value = order.status;
+        row.getCell(4).value = Number(order.grandTotal);
+        row.getCell(5).value = paid;
+        row.getCell(6).value = due;
+        row.getCell(7).value = paymentLabel;
+
+        [4, 5, 6].forEach((c) => {
+          const cell = row.getCell(c);
+          cell.numFmt = '"₹"#,##0.00';
+          cell.alignment = { horizontal: "right" };
+        });
+
+        const paymentColor =
+          paymentLabel === "Paid"
+            ? GREEN
+            : paymentLabel === "Partial"
+            ? AMBER
+            : paymentLabel === "Pending"
+            ? RED
+            : GREY;
+        row.getCell(7).font = { name: "Arial", bold: true, color: { argb: paymentColor } };
+        row.getCell(7).alignment = { horizontal: "right" };
+
+        row.eachCell({ includeEmpty: true }, (cell) => {
+          if (!cell.font) cell.font = { name: "Arial" };
+          cell.border = { bottom: { style: "thin", color: { argb: BORDER_LIGHT } } };
+        });
+        r++;
+      });
+      const dataEndRow = r - 1;
+      const hasRows = dataEndRow >= dataStartRow;
+
+      // ---- Totals row (live SUM formulas, not hardcoded numbers) ----
+      const totalsRow = sheet.getRow(r);
+      totalsRow.getCell(3).value = "Totals";
+      totalsRow.getCell(3).font = { name: "Arial", bold: true };
+      totalsRow.getCell(3).alignment = { horizontal: "right" };
+
+      ["D", "E", "F"].forEach((col) => {
+        const cell = totalsRow.getCell(col);
+        cell.value = hasRows ? { formula: `SUM(${col}${dataStartRow}:${col}${dataEndRow})` } : 0;
+        cell.numFmt = '"₹"#,##0.00';
+        cell.font = { name: "Arial", bold: true };
+        cell.alignment = { horizontal: "right" };
+        cell.border = { top: { style: "thin", color: { argb: BRAND_DARK } } };
+      });
+
+      sheet.views = [{ state: "frozen", ySplit: headerRowNum, showGridLines: false }];
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const filenameRange = from === to ? from : `${from}_to_${to}`;
+      a.href = url;
+      a.download = `Payments_${filenameRange}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(`Failed to export: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-slate-50 p-6">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -170,6 +359,22 @@ export default function Payment() {
               className="bg-transparent text-xs font-medium text-slate-600 outline-none"
             />
           </div>
+          <button
+            onClick={handleExportExcel}
+            disabled={loading || exporting || orders.length === 0}
+            className="flex items-center gap-1.5 rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+              <path
+                d="M12 3v12m0 0l-4-4m4 4l4-4M5 19h14"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {exporting ? "Preparing…" : "Export to Excel"}
+          </button>
         </div>
       </div>
 
@@ -235,7 +440,7 @@ export default function Payment() {
                   const paid = orderPaidAmount(order);
                   const due = orderBalanceDue(order);
                   const isCancelled = CANCELLED_ORDER_STATUSES.includes(order.status);
-                  const paymentLabel = isCancelled ? "—" : due <= 0 ? "Paid" : paid > 0 ? "Partial" : "Pending";
+                  const paymentLabel = paymentLabelFor(order);
                   const paymentColor = isCancelled
                     ? "text-slate-400"
                     : due <= 0
