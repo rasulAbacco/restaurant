@@ -8,6 +8,7 @@ import {
   refreshHandler,
   logoutHandler,
   meHandler,
+  updateProfileHandler,
   forgotPasswordHandler,
   resetPasswordHandler,
   changePasswordHandler,
@@ -25,6 +26,7 @@ router.post("/reset-password", resetPasswordHandler);
 
 // Protected
 router.get("/me", requireAuth, meHandler);
+router.put("/me", requireAuth, updateProfileHandler);
 router.post("/change-password", requireAuth, changePasswordHandler);
 
 export default router;

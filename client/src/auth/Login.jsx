@@ -1,5 +1,5 @@
 // src/auth/Login.jsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -15,7 +15,65 @@ import {
   FiCheckCircle,
   FiSun,
   FiMoon,
+  FiAlertCircle,
+  FiX,
 } from "react-icons/fi";
+
+// Small self-contained error toast for this screen. Deliberately separate
+// from the field-level red text below the inputs — that stays for
+// accessibility/focus purposes, but a failed login is easy to miss if the
+// only feedback is a thin line of red text under one field, especially
+// since the password field itself gets no visual error state at all
+// (see note on `errors.email` below). The toast makes "this failed" obvious
+// regardless of which field currently has focus.
+function ErrorToast({ message, onClose }) {
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    if (!message) return;
+    setEntered(false);
+    const raf = requestAnimationFrame(() => setEntered(true));
+    const timer = setTimeout(() => onClose(), 5000);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message]);
+
+  if (!message) return null;
+
+  return (
+    <div className="pointer-events-none fixed right-4 top-6 z-[100]">
+      <div
+        role="alert"
+        aria-live="assertive"
+        className={`pointer-events-auto flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-3 overflow-hidden rounded-2xl border border-red-100 bg-white p-4 shadow-lg shadow-red-900/10 ring-1 ring-black/5 transition-all duration-300 ease-out dark:border-red-900/40 dark:bg-[#171C17] ${
+          entered ? "translate-x-0 opacity-100" : "translate-x-[130%] opacity-0"
+        }`}
+      >
+        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 dark:bg-red-900/30">
+          <FiAlertCircle className="text-lg text-red-600 dark:text-red-400" />
+        </span>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+            Sign in failed
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-[#9CA8A0]">
+            {message}
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="mt-0.5 shrink-0 rounded-lg p-1 text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500 dark:hover:bg-white/10"
+        >
+          <FiX className="text-base" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const Login = () => {
   // ==========================
@@ -33,6 +91,10 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
 
   const [errors, setErrors] = useState({});
+
+  // Toast message shown for login failures — separate from `errors` (which
+  // still drives the inline red field state) so both can coexist.
+  const [toastMessage, setToastMessage] = useState("");
 
   const navigate = useNavigate();
 
@@ -110,22 +172,37 @@ const Login = () => {
     if (!validateForm()) return;
 
     setLoading(true);
+    setToastMessage("");
 
-    const result = await login(formData.email, formData.password);
+    // FIX: this previously had no try/catch. If `login()` ever threw
+    // (network error, unexpected response shape, etc.) instead of
+    // resolving to { success: false }, execution would jump out of this
+    // function entirely — setLoading(false) never ran, so the button stayed
+    // stuck mid-submit and nothing visible happened, which is exactly what
+    // reads as "the page just refreshed / did nothing" on a wrong password.
+    try {
+      const result = await login(formData.email, formData.password);
 
-    setLoading(false);
+      if (!result.success) {
+        // Backend intentionally returns one generic message for both a
+        // wrong email/username AND a wrong password (see auth.service.js) —
+        // this prevents the login form from being usable to check which
+        // emails are registered (user enumeration). Surface it clearly via
+        // toast rather than a thin line of red text that's easy to miss.
+        const message = result.message || "Invalid email or password.";
+        setErrors({ email: message });
+        setToastMessage(message);
+        return;
+      }
 
-    if (!result.success) {
-      setErrors({
-        email: result.message,
-      });
-
-      return;
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      const message = err?.message || "Something went wrong. Please try again.";
+      setErrors({ email: message });
+      setToastMessage(message);
+    } finally {
+      setLoading(false);
     }
-
-    navigate("/dashboard", {
-      replace: true,
-    });
   };
   // ==========================
   // UI
@@ -133,12 +210,16 @@ const Login = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#F3F5EE] via-white to-[#EFF2E9] dark:from-[#0D110C] dark:via-[#10140F] dark:to-[#0D110C] flex relative transition-colors">
+      <ErrorToast message={toastMessage} onClose={() => setToastMessage("")} />
+
       {/* ============ THEME TOGGLE (TOP RIGHT) ============ */}
 
       <button
         onClick={toggleTheme}
         aria-label="Toggle light / dark theme"
-        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        title={
+          theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+        }
         className="absolute top-6 right-6 z-20 w-11 h-11 rounded-full border border-[#E7EAE1] dark:border-[#262B24] bg-white dark:bg-[#171C17] shadow-sm flex items-center justify-center hover:border-[#3FA34D]/40 dark:hover:border-[#43B75A]/40 transition-colors"
       >
         {theme === "dark" ? (
@@ -209,7 +290,9 @@ const Login = () => {
                 Welcome Back
               </h2>
 
-              <p className="mt-2 text-[#6B7280] dark:text-[#9CA8A0]">Sign in to continue</p>
+              <p className="mt-2 text-[#6B7280] dark:text-[#9CA8A0]">
+                Sign in to continue
+              </p>
             </div>
 
             <form onSubmit={handleLogin} className="mt-10 space-y-6">
@@ -275,7 +358,9 @@ const Login = () => {
                 </div>
 
                 {errors.password && (
-                  <p className="text-[#EF5350] text-sm mt-2">{errors.password}</p>
+                  <p className="text-[#EF5350] text-sm mt-2">
+                    {errors.password}
+                  </p>
                 )}
               </div>
               {/* Remember Me & Forgot Password */}

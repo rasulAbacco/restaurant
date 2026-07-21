@@ -27,12 +27,26 @@ import AdminLayout from "./components/layout/AdminLayout";
 import Dashboard from "./dashboard/Dashboard";
 
 // ==============================================
+// Profile
+// FIX: ProfileMenu.jsx's "My Profile" and "Change Password" links pointed
+// to /profile and /change-password, but neither route existed anywhere
+// below — every unmatched path falls through to the catch-all
+// (`<Route path="*" element={<Navigate to="/dashboard" replace />} />`),
+// so clicking either link silently bounced straight back to /dashboard.
+// That's what looked like "the profile tab isn't working."
+// ==============================================
+
+import Profile from "./profile/Profile";
+import ChangePassword from "./profile/ChangePassword";
+import HelpSupport from "./profile/HelpSupport";
+
+// ==============================================
 // Module Routes
 // ==============================================
 
 import MenuRoutes from "./menu/menuRoutes";
 import PosRoutes from "./pos/posRoutes";
-import Tables from "./tables/tablesRoutes"
+import Tables from "./tables/tablesRoutes";
 import SettingsRoutes from "./settings/settingsRoutes";
 import KitchenRoutes from "./pos/Kitchen/KitchenRoutes";
 import KioskRoutes from "./kiosk/kioskRoutes";
@@ -75,6 +89,12 @@ function App() {
 
           <Route path="/dashboard" element={<Dashboard />} />
 
+          {/* Profile */}
+
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/change-password" element={<ChangePassword />} />
+          <Route path="/help" element={<HelpSupport />} />
+
           {/* Menu */}
 
           <Route path="/menu/*" element={<MenuRoutes />} />
@@ -86,7 +106,7 @@ function App() {
           <Route path="/kitchen/*" element={<KitchenRoutes />} />
           <Route path="/billing/*" element={<BillingRoutes />} />
           <Route path="/payments/*" element={<PaymentRoutes />} />
-          
+
           {/* Reports */}
           <Route path="/reports/*" element={<ReportsRoutes />} />
 

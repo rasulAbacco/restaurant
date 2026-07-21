@@ -67,6 +67,30 @@ const getToken = () => getAccessToken();
 const isAuthenticated = () => !!getAccessToken();
 
 // ==============================================
+// UPDATE PROFILE
+// FEATURE: powers the Profile page's Edit mode. payload can include any of
+// fullName, gender, mobile, dob, emergencyContact, photoUrl, and address
+// ({ houseNo, street, city, state, pincode }) — see auth.service.js's
+// EDITABLE_EMPLOYEE_FIELDS for exactly what the backend accepts.
+// ==============================================
+
+const updateProfile = async (payload) => {
+  const { ok, data } = await apiRequest("/auth/me", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+
+  if (!ok || !data?.success) {
+    return {
+      success: false,
+      message: data?.message || "Unable to update profile.",
+    };
+  }
+
+  return { success: true, user: data.user };
+};
+
+// ==============================================
 // CHANGE PASSWORD
 // ==============================================
 
@@ -136,6 +160,7 @@ const authService = {
   restoreSession,
   getToken,
   isAuthenticated,
+  updateProfile,
   changePassword,
   forgotPassword,
   resetPassword,

@@ -18,19 +18,58 @@ const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
+// Employee include shared by every lookup that needs to build a publicUser()
+// — always pulls address along, since the Profile page shows/edits it.
+const EMPLOYEE_INCLUDE = { employee: { include: { address: true } } };
+
 // ==============================================
 // SHARED HELPERS
 // ==============================================
 
-const publicUser = (userAccount) => ({
-  id: userAccount.employee.id,
-  userAccountId: userAccount.id,
-  name: userAccount.employee.fullName,
-  email: userAccount.email,
-  username: userAccount.username,
-  role: userAccount.role,
-  avatar: userAccount.employee.photoUrl || "",
-});
+// FEATURE: extended beyond { id, name, email, username, role, avatar } to
+// carry everything the Profile page shows — personal details, employment
+// info (read-only there), and address. Every place that previously did
+// `include: { employee: true }` now needs `include: { employee: { include:
+// { address: true } } }` (see EMPLOYEE_INCLUDE above) for `emp.address` to
+// exist here.
+const publicUser = (userAccount) => {
+  const emp = userAccount.employee;
+
+  return {
+    id: emp.id,
+    userAccountId: userAccount.id,
+    employeeCode: emp.employeeCode,
+    name: emp.fullName,
+    email: userAccount.email,
+    username: userAccount.username,
+    role: userAccount.role,
+    avatar: emp.photoUrl || "",
+
+    // Personal — editable via updateProfile() below
+    gender: emp.gender || "",
+    dob: emp.dob,
+    mobile: emp.mobile || "",
+    emergencyContact: emp.emergencyContact || "",
+
+    // Employment — read-only here; managed via the Employees module
+    department: emp.department,
+    designation: emp.designation,
+    joiningDate: emp.joiningDate,
+    employmentType: emp.employmentType || "",
+    store: emp.store,
+
+    // Address — editable via updateProfile() below
+    address: emp.address
+      ? {
+          houseNo: emp.address.houseNo || "",
+          street: emp.address.street || "",
+          city: emp.address.city || "",
+          state: emp.address.state || "",
+          pincode: emp.address.pincode || "",
+        }
+      : null,
+  };
+};
 
 const findAccountByIdentifier = async (identifier) => {
   return prisma.userAccount.findFirst({
@@ -40,7 +79,7 @@ const findAccountByIdentifier = async (identifier) => {
         { username: identifier.toLowerCase() },
       ],
     },
-    include: { employee: true },
+    include: EMPLOYEE_INCLUDE,
   });
 };
 
@@ -146,7 +185,7 @@ export const refreshAccessToken = async (rawRefreshToken) => {
 
   const stored = await prisma.refreshToken.findUnique({
     where: { tokenHash },
-    include: { userAccount: { include: { employee: true } } },
+    include: { userAccount: { include: EMPLOYEE_INCLUDE } },
   });
 
   if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
@@ -202,7 +241,7 @@ export const logout = async (rawRefreshToken) => {
 export const getCurrentUser = async (userAccountId) => {
   const account = await prisma.userAccount.findUnique({
     where: { id: userAccountId },
-    include: { employee: true },
+    include: EMPLOYEE_INCLUDE,
   });
 
   if (!account || !account.isActive) {
@@ -210,6 +249,91 @@ export const getCurrentUser = async (userAccountId) => {
   }
 
   return { success: true, user: publicUser(account) };
+};
+
+// ==============================================
+// UPDATE MY PROFILE (self-service)
+// FEATURE: powers the Profile page's Edit mode. Deliberately scoped to a
+// small allow-list of Employee fields — name/personal-details/address —
+// NOT role, department, designation, employeeCode, status, or store, which
+// stay admin-managed via the Employees module. Email/username also aren't
+// editable here since they double as login identifiers.
+// ==============================================
+
+const EDITABLE_EMPLOYEE_FIELDS = [
+  "fullName",
+  "gender",
+  "mobile",
+  "emergencyContact",
+  "photoUrl",
+];
+
+export const updateProfile = async (userAccountId, payload = {}) => {
+  const account = await prisma.userAccount.findUnique({
+    where: { id: userAccountId },
+    select: { employeeId: true },
+  });
+
+  if (!account) {
+    return { success: false, status: 404, message: "Account not found." };
+  }
+
+  const employeeData = {};
+  for (const field of EDITABLE_EMPLOYEE_FIELDS) {
+    if (payload[field] !== undefined) {
+      employeeData[field] = payload[field] || null;
+    }
+  }
+
+  // Same fix as employees.service.js's normalizeEmployeeDates — a bare
+  // "YYYY-MM-DD" from <input type="date"> isn't a full ISO-8601 DateTime,
+  // which Prisma's query engine rejects outright. Convert explicitly.
+  if (payload.dob !== undefined) {
+    if (payload.dob === null || payload.dob === "") {
+      employeeData.dob = null;
+    } else {
+      const parsed = new Date(payload.dob);
+      if (Number.isNaN(parsed.getTime())) {
+        return {
+          success: false,
+          status: 400,
+          message: "Invalid date of birth.",
+        };
+      }
+      employeeData.dob = parsed;
+    }
+  }
+
+  const address = payload.address;
+
+  try {
+    await prisma.employee.update({
+      where: { id: account.employeeId },
+      data: {
+        ...employeeData,
+        ...(address
+          ? { address: { upsert: { create: address, update: address } } }
+          : {}),
+      },
+    });
+  } catch (err) {
+    if (err.code === "P2002") {
+      const field = err.meta?.target?.join(", ") || "value";
+      return {
+        success: false,
+        status: 409,
+        message: `This ${field} is already in use.`,
+      };
+    }
+    throw err;
+  }
+
+  const updatedAccount = await prisma.userAccount.findUnique({
+    where: { id: userAccountId },
+    include: EMPLOYEE_INCLUDE,
+  });
+
+  return { success: true, user: publicUser(updatedAccount) };
 };
 
 // ==============================================

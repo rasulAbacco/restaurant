@@ -22,7 +22,7 @@ export const ROLES = {
   MANAGER: "MANAGER",
   CASHIER: "CASHIER",
   KITCHEN: "KITCHEN",
-   WAITER: "WAITER",
+  WAITER: "WAITER",
 };
 
 // ==========================================
@@ -32,6 +32,23 @@ export const ROLES = {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
 
+  // FIX: `loading` gates the provider's render below (`{!loading &&
+  // children}`) — while it's true, the ENTIRE app (everything under
+  // AuthProvider, including whatever page is currently mounted) renders
+  // nothing at all. This is only meant to cover the one-time "still
+  // restoring the session on first load" check in the effect below.
+  //
+  // `login()` used to also flip this same flag on/off for the duration of
+  // a login request. That meant submitting the form — even a WRONG
+  // password — unmounted the entire app (including the Login page that was
+  // mid-submit) the instant the request started, then remounted a brand
+  // new Login instance once it finished. The old instance's later
+  // setErrors()/setToastMessage() calls were landing on an already-
+  // unmounted component and got silently dropped, while the new instance
+  // came up with empty state — which is exactly what read as "the page
+  // just refreshed and I never saw what was wrong." Login.jsx already
+  // tracks its own local `loading` for the button spinner, so the context
+  // doesn't need to touch this flag for login at all.
   const [loading, setLoading] = useState(true);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -69,22 +86,19 @@ export const AuthProvider = ({ children }) => {
   // ==========================================
 
   const login = async (email, password) => {
-    setLoading(true);
+    // Deliberately NOT touching the top-level `loading` state here — see
+    // the comment on its declaration above. A login attempt (successful or
+    // not) should never cause the app to unmount/remount.
+    const result = await authService.login(email, password);
 
-    try {
-      const result = await authService.login(email, password);
-
-      if (!result.success) {
-        return result;
-      }
-
-      setUser(result.user);
-      setIsAuthenticated(true);
-
-      return { success: true, user: result.user };
-    } finally {
-      setLoading(false);
+    if (!result.success) {
+      return result;
     }
+
+    setUser(result.user);
+    setIsAuthenticated(true);
+
+    return { success: true, user: result.user };
   };
 
   // ==========================================
@@ -105,6 +119,23 @@ export const AuthProvider = ({ children }) => {
 
   const updateUser = (updatedData) => {
     setUser((prev) => ({ ...prev, ...updatedData }));
+  };
+
+  // ==========================================
+  // UPDATE PROFILE
+  // FEATURE: powers the Profile page's Edit mode. On success, refreshes the
+  // local `user` so the page (and anywhere else showing name/avatar/etc.)
+  // reflects the change immediately without needing a full session reload.
+  // ==========================================
+
+  const updateProfile = async (payload) => {
+    const result = await authService.updateProfile(payload);
+
+    if (result.success) {
+      setUser(result.user);
+    }
+
+    return result;
   };
 
   // ==========================================
@@ -145,7 +176,8 @@ export const AuthProvider = ({ children }) => {
 
   const canViewReports = () => isOwner() || isManager();
 
-  const canAccessPOS = () => isOwner() || isManager() || isCashier() || isWaiter();
+  const canAccessPOS = () =>
+    isOwner() || isManager() || isCashier() || isWaiter();
 
   const canAccessKitchen = () => isOwner() || isManager() || isKitchen();
 
@@ -176,6 +208,8 @@ export const AuthProvider = ({ children }) => {
       updateUser,
 
       changePassword,
+
+      updateProfile,
 
       hasRole,
 
