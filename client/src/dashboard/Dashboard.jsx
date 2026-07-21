@@ -131,11 +131,20 @@ const Dashboard = () => {
             />
 
             <StatCard
-              title="Tables Occupied"
+              title="My Tables Occupied"
               value={waiterSummary?.tablesOccupied ?? "—"}
               icon={<FiGrid />}
               color="purple"
-              subtitle="Right now"
+              subtitle="Among tables assigned to you"
+              loading={loading}
+            />
+
+            <StatCard
+              title="My Assigned Tables"
+              value={waiterSummary?.assignedTables ?? "—"}
+              icon={<FiGrid />}
+              color="blue"
+              subtitle="Total tables under your section"
               loading={loading}
             />
           </>

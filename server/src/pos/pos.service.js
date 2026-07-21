@@ -6,15 +6,36 @@ import * as kotService from "./kot/kot.service.js";
  * Generates the next sequential order number, e.g. ORD-000123.
  * NOTE: simple count-based approach, same pattern as employees/expenses codes.
  */
+// FIX: was `count() + 1`, which collides with an existing order's number
+// once any order has ever been hard-deleted (deleteOrder shrinks the count,
+// so the "next" number can land on one that's already taken by a
+// higher-numbered order that's still around — exactly the unique
+// constraint violation on orderNumber that showed up after adding delete).
+// Basing it on the highest orderNumber actually seen removes that
+// possibility. Lexicographic DESC sort matches numeric order here because
+// every orderNumber is zero-padded to the same width.
 async function generateOrderNumber(client = prisma) {
-  const count = await client.order.count();
-  const next = count + 1;
-  return `ORD-${String(next).padStart(6, "0")}`;
+  const last = await client.order.findFirst({
+    orderBy: { orderNumber: "desc" },
+    select: { orderNumber: true },
+  });
+  const lastNum = last
+    ? parseInt(last.orderNumber.replace("ORD-", ""), 10) || 0
+    : 0;
+  return `ORD-${String(lastNum + 1).padStart(6, "0")}`;
 }
 
+// Same fix as generateOrderNumber above — holdNumber is also @unique.
 async function generateHoldNumber() {
-  const count = await prisma.order.count({ where: { status: "ON_HOLD" } });
-  return `HOLD-${String(count + 1).padStart(4, "0")}`;
+  const last = await prisma.order.findFirst({
+    where: { holdNumber: { not: null } },
+    orderBy: { holdNumber: "desc" },
+    select: { holdNumber: true },
+  });
+  const lastNum = last?.holdNumber
+    ? parseInt(last.holdNumber.replace("HOLD-", ""), 10) || 0
+    : 0;
+  return `HOLD-${String(lastNum + 1).padStart(4, "0")}`;
 }
 
 // Statuses that are allowed to follow the current status. Keeps the kitchen/
@@ -80,7 +101,9 @@ async function resolveAddOnPricing(itemsData, client = prisma) {
   const addOnIds = itemsData.flatMap((i) => i.addOns.map((a) => a.addOnId));
   if (addOnIds.length === 0) return { itemsData, addOnTotal: 0 };
 
-  const addOns = await client.addOn.findMany({ where: { id: { in: addOnIds } } });
+  const addOns = await client.addOn.findMany({
+    where: { id: { in: addOnIds } },
+  });
   const addOnMap = new Map(addOns.map((a) => [a.id, a]));
 
   let addOnTotal = 0;
@@ -115,13 +138,22 @@ export async function createOrder(payload, client = prisma) {
     store,
   } = payload;
 
-  if (!items || items.length === 0) throw new Error("Order must have at least one item");
+  if (!items || items.length === 0)
+    throw new Error("Order must have at least one item");
 
-  const { itemsData, subtotal, gstAmount } = await computeItemPricing(items, client);
+  const { itemsData, subtotal, gstAmount } = await computeItemPricing(
+    items,
+    client,
+  );
   const { addOnTotal } = await resolveAddOnPricing(itemsData, client);
 
   const grandTotal =
-    subtotal + gstAmount + addOnTotal + Number(serviceChargeAmount || 0) + Number(deliveryCharge || 0) + Number(packagingCharge || 0);
+    subtotal +
+    gstAmount +
+    addOnTotal +
+    Number(serviceChargeAmount || 0) +
+    Number(deliveryCharge || 0) +
+    Number(packagingCharge || 0);
 
   const orderNumber = await generateOrderNumber(client);
 
@@ -169,7 +201,10 @@ export async function createOrder(payload, client = prisma) {
 
   // Dine-in orders occupy the table immediately
   if (orderType === "DINE_IN" && tableId) {
-    await client.restaurantTable.update({ where: { id: tableId }, data: { status: "OCCUPIED" } });
+    await client.restaurantTable.update({
+      where: { id: tableId },
+      data: { status: "OCCUPIED" },
+    });
   }
 
   return order;
@@ -182,22 +217,33 @@ export async function createOrder(payload, client = prisma) {
 // instead of createOrder + sendToKitchen as two separate requests, since that
 // two-step version can leave a real Order behind even when the kitchen send fails.
 export async function createOrderAndSendToKitchen(payload) {
-  return prisma.$transaction(
-    async (tx) => {
-      const order = await createOrder(payload, tx);
+  return prisma
+    .$transaction(
+      async (tx) => {
+        const order = await createOrder(payload, tx);
 
-      const orderItemIds = order.items.map((i) => i.id);
-      if (orderItemIds.length > 0) {
-        await kotService.sendToKitchen(order.id, orderItemIds, tx);
-      }
+        const orderItemIds = order.items.map((i) => i.id);
+        if (orderItemIds.length > 0) {
+          await kotService.sendToKitchen(order.id, orderItemIds, tx);
+        }
 
-      return order.id;
-    },
-    { timeout: 15000 }
-  ).then((orderId) => getOrderById(orderId));
+        return order.id;
+      },
+      { timeout: 15000 },
+    )
+    .then((orderId) => getOrderById(orderId));
 }
 
-export async function listOrders({ status, orderType, tableId, customerId, from, to, page = 1, limit = 20 }) {
+export async function listOrders({
+  status,
+  orderType,
+  tableId,
+  customerId,
+  from,
+  to,
+  page = 1,
+  limit = 20,
+}) {
   const where = {
     ...(status ? { status } : {}),
     ...(orderType ? { orderType } : {}),
@@ -220,7 +266,9 @@ export async function listOrders({ status, orderType, tableId, customerId, from,
         table: true,
         customer: true,
         waiter: { select: { fullName: true, employeeCode: true } },
-        items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+        items: {
+          include: { menuItem: true, addOns: { include: { addOn: true } } },
+        },
         payments: true,
       },
       orderBy: { createdAt: "desc" },
@@ -241,7 +289,9 @@ export async function getOrderById(id) {
       customer: true,
       waiter: { select: { fullName: true, employeeCode: true } },
       deliveryPartner: true,
-      items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+      items: {
+        include: { menuItem: true, addOns: { include: { addOn: true } } },
+      },
       payments: true,
       billSplits: true,
       discountsApplied: true,
@@ -260,14 +310,20 @@ export async function updateOrderStatus(id, status) {
     throw new Error(`Cannot move order from ${order.status} to ${status}`);
   }
 
-  const updated = await prisma.order.update({ where: { id }, data: { status } });
+  const updated = await prisma.order.update({
+    where: { id },
+    data: { status },
+  });
 
   if (status === "COMPLETED") {
     await consumeStockForOrder(id);
   }
 
   if (status === "COMPLETED" && order.tableId) {
-    await prisma.restaurantTable.update({ where: { id: order.tableId }, data: { status: "FREE" } });
+    await prisma.restaurantTable.update({
+      where: { id: order.tableId },
+      data: { status: "FREE" },
+    });
   }
 
   return updated;
@@ -285,7 +341,9 @@ async function consumeStockForOrder(orderId) {
     for (const recipe of item.menuItem.recipeIngredients) {
       const consumeQty = Number(recipe.quantity) * item.quantity;
 
-      const stock = await prisma.inventoryStock.findUnique({ where: { ingredientId: recipe.ingredientId } });
+      const stock = await prisma.inventoryStock.findUnique({
+        where: { ingredientId: recipe.ingredientId },
+      });
       const previousStock = Number(stock?.quantityOnHand || 0);
       const newStock = previousStock - consumeQty;
 
@@ -312,11 +370,17 @@ async function consumeStockForOrder(orderId) {
 
 export async function holdOrder(id) {
   const holdNumber = await generateHoldNumber();
-  return prisma.order.update({ where: { id }, data: { status: "ON_HOLD", holdNumber } });
+  return prisma.order.update({
+    where: { id },
+    data: { status: "ON_HOLD", holdNumber },
+  });
 }
 
 export async function resumeOrder(id) {
-  return prisma.order.update({ where: { id }, data: { status: "NEW", holdNumber: null } });
+  return prisma.order.update({
+    where: { id },
+    data: { status: "NEW", holdNumber: null },
+  });
 }
 
 export async function cancelOrder(id, reason) {
@@ -324,10 +388,21 @@ export async function cancelOrder(id, reason) {
   if (!order) throw new Error("Order not found");
 
   if (order.tableId) {
-    await prisma.restaurantTable.update({ where: { id: order.tableId }, data: { status: "FREE" } });
+    await prisma.restaurantTable.update({
+      where: { id: order.tableId },
+      data: { status: "FREE" },
+    });
   }
 
-  return prisma.order.update({ where: { id }, data: { status: "CANCELLED", notes: reason ? `${order.notes || ""}\nCancelled: ${reason}` : order.notes } });
+  return prisma.order.update({
+    where: { id },
+    data: {
+      status: "CANCELLED",
+      notes: reason
+        ? `${order.notes || ""}\nCancelled: ${reason}`
+        : order.notes,
+    },
+  });
 }
 
 export async function transferTable(orderId, newTableId) {
@@ -335,11 +410,20 @@ export async function transferTable(orderId, newTableId) {
   if (!order) throw new Error("Order not found");
 
   if (order.tableId) {
-    await prisma.restaurantTable.update({ where: { id: order.tableId }, data: { status: "FREE" } });
+    await prisma.restaurantTable.update({
+      where: { id: order.tableId },
+      data: { status: "FREE" },
+    });
   }
-  await prisma.restaurantTable.update({ where: { id: newTableId }, data: { status: "OCCUPIED" } });
+  await prisma.restaurantTable.update({
+    where: { id: newTableId },
+    data: { status: "OCCUPIED" },
+  });
 
-  return prisma.order.update({ where: { id: orderId }, data: { tableId: newTableId } });
+  return prisma.order.update({
+    where: { id: orderId },
+    data: { tableId: newTableId },
+  });
 }
 
 // Adds new items to an order that's already been placed (e.g. the customer
@@ -364,8 +448,8 @@ export async function addItemsToOrder(orderId, items) {
           notes: item.notes,
         },
         include: { menuItem: true },
-      })
-    )
+      }),
+    ),
   );
 
   const order = await recalculateOrderTotals(orderId);
@@ -373,10 +457,72 @@ export async function addItemsToOrder(orderId, items) {
 }
 
 async function recalculateOrderTotals(orderId) {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
-  const subtotal = order.items.reduce((sum, i) => sum + Number(i.totalPrice), 0);
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true },
+  });
+  const subtotal = order.items.reduce(
+    (sum, i) => sum + Number(i.totalPrice),
+    0,
+  );
   const gstAmount = subtotal * 0; // per-item gst already embedded at creation; recompute if needed
-  const grandTotal = subtotal + Number(order.gstAmount) + Number(order.serviceChargeAmount) + Number(order.deliveryCharge || 0) + Number(order.packagingCharge || 0) - Number(order.discountAmount);
+  const grandTotal =
+    subtotal +
+    Number(order.gstAmount) +
+    Number(order.serviceChargeAmount) +
+    Number(order.deliveryCharge || 0) +
+    Number(order.packagingCharge || 0) -
+    Number(order.discountAmount);
 
-  return prisma.order.update({ where: { id: orderId }, data: { subtotal, grandTotal } });
+  return prisma.order.update({
+    where: { id: orderId },
+    data: { subtotal, grandTotal },
+  });
+}
+
+// Owner-only: permanently removes an order and everything tied to it.
+//
+// OrderItem/OrderItemAddOn, KitchenOrder (+ its KitchenOrderItem/
+// KitchenOrderStatusLog/KitchenNote children), BillSplit, and OrderDiscount
+// are all declared `onDelete: Cascade` in schema.prisma, so a plain
+// `order.delete()` cleans those up automatically.
+//
+// Payment and Invoice are NOT cascaded (no onDelete on those relations) —
+// deleting the order first would hit a foreign key violation, so they're
+// removed explicitly first. LoyaltyTransaction is also not cascaded, but
+// its rows represent a customer's points ledger history (points already
+// earned/redeemed) rather than order-specific data, so instead of deleting
+// that history we just detach the reference (orderId -> null).
+export async function deleteOrder(id) {
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order) throw new Error("Order not found");
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payment.deleteMany({ where: { orderId: id } });
+    await tx.invoice.deleteMany({ where: { orderId: id } });
+    await tx.loyaltyTransaction.updateMany({
+      where: { orderId: id },
+      data: { orderId: null },
+    });
+    // KitchenOrderItem.orderItemId is NOT a cascading FK (only
+    // KitchenOrderItem.kitchenOrderId is) — deleting the order would
+    // cascade-delete its OrderItems while these rows still point at them,
+    // which is exactly the "kitchen_order_items_orderItemId_fkey" violation.
+    // Delete them explicitly first; their parent KitchenOrder still gets
+    // cleaned up normally via the order.delete() cascade below.
+    await tx.kitchenOrderItem.deleteMany({
+      where: { orderItem: { orderId: id } },
+    });
+    await tx.order.delete({ where: { id } });
+  });
+
+  // Free the table if this order still had it occupied — same as cancelOrder.
+  if (order.tableId) {
+    await prisma.restaurantTable.update({
+      where: { id: order.tableId },
+      data: { status: "FREE" },
+    });
+  }
+
+  return { success: true, id };
 }

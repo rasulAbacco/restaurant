@@ -800,6 +800,7 @@ model Employee {
   expenseAuditLogs ExpenseAuditLog[] @relation("ExpenseAuditLogsByEmployee")
 
   ordersAsWaiter    Order[]         @relation("OrdersByWaiter")
+  assignedTables    RestaurantTable[] @relation("TablesByWaiter")
   discountsApproved OrderDiscount[] @relation("DiscountsApprovedBy")
 
   kitchenOrdersAsChef  KitchenOrder[]          @relation("KOTsByChef")
@@ -1104,6 +1105,13 @@ model RestaurantTable {
   floorId String?
   floor   Floor?  @relation(fields: [floorId], references: [id])
 
+  // Waiter assignment — a table is assigned to at most one waiter at a time.
+  // Owner/Manager assigns via /pos/tables/assign* endpoints; the waiter then
+  // only sees orders/payments for tables where waiterId === their own id.
+  waiterId   String?
+  waiter     Employee? @relation("TablesByWaiter", fields: [waiterId], references: [id])
+  assignedAt DateTime?
+
   orders Order[]
 
   createdAt DateTime @default(now())
@@ -1111,6 +1119,7 @@ model RestaurantTable {
 
   @@index([status])
   @@index([floorId])
+  @@index([waiterId])
   @@map("restaurant_tables")
 }
 

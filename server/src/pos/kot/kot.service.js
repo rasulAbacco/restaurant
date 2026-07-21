@@ -1,9 +1,22 @@
 // server/src/pos/kot/kot.service.js
 import prisma from "../../config/prisma.js";
 
+// FIX: same bug as pos.service.js's generateOrderNumber — `count() + 1`
+// collides with an existing kotNumber once any KitchenOrder has ever been
+// removed (e.g. cascade-deleted when an Owner deletes its parent Order),
+// since the count shrinks but higher-numbered KOTs are still around.
+// Basing it on the highest kotNumber actually seen removes that
+// possibility — lexicographic DESC sort matches numeric order here because
+// every kotNumber is zero-padded to the same width.
 async function generateKotNumber(client = prisma) {
-  const count = await client.kitchenOrder.count();
-  return `KOT-${String(count + 1).padStart(6, "0")}`;
+  const last = await client.kitchenOrder.findFirst({
+    orderBy: { kotNumber: "desc" },
+    select: { kotNumber: true },
+  });
+  const lastNum = last
+    ? parseInt(last.kotNumber.replace("KOT-", ""), 10) || 0
+    : 0;
+  return `KOT-${String(lastNum + 1).padStart(6, "0")}`;
 }
 
 // Sends the given OrderItems to the kitchen. Groups items by their MenuItem's
@@ -19,26 +32,31 @@ export async function sendToKitchen(orderId, orderItemIds, client = prisma) {
     where: { id: { in: orderItemIds }, orderId },
     include: {
       menuItem: true,
-      kitchenOrderItems: { include: { kitchenOrder: { select: { status: true } } } },
+      kitchenOrderItems: {
+        include: { kitchenOrder: { select: { status: true } } },
+      },
     },
   });
-  if (orderItems.length === 0) throw new Error("No matching order items to send");
+  if (orderItems.length === 0)
+    throw new Error("No matching order items to send");
 
   // Refuse items that are already sitting on a live (non-cancelled) ticket —
   // prevents duplicate KOTs from a double-click or a client retry.
   const alreadySent = orderItems.filter((i) =>
-    i.kitchenOrderItems.some((koi) => koi.kitchenOrder.status !== "CANCELLED")
+    i.kitchenOrderItems.some((koi) => koi.kitchenOrder.status !== "CANCELLED"),
   );
   if (alreadySent.length > 0) {
     const names = alreadySent.map((i) => i.menuItem.name).join(", ");
-    throw new Error(`These items have already been sent to the kitchen: ${names}`);
+    throw new Error(
+      `These items have already been sent to the kitchen: ${names}`,
+    );
   }
 
   const unassigned = orderItems.filter((i) => !i.menuItem.kitchenSectionId);
   if (unassigned.length > 0) {
     const names = unassigned.map((i) => i.menuItem.name).join(", ");
     throw new Error(
-      `These menu items have no kitchen section assigned and cannot be sent: ${names}. Set kitchenSectionId on them first.`
+      `These menu items have no kitchen section assigned and cannot be sent: ${names}. Set kitchenSectionId on them first.`,
     );
   }
 
@@ -56,7 +74,7 @@ export async function sendToKitchen(orderId, orderItemIds, client = prisma) {
     const kotNumber = await generateKotNumber(client);
     const targetPrepMinutes = items.reduce(
       (sum, i) => sum + (i.menuItem.prepTimeMinutes || 0) * i.quantity,
-      0
+      0,
     );
 
     const kitchenOrder = await client.kitchenOrder.create({
@@ -74,7 +92,11 @@ export async function sendToKitchen(orderId, orderItemIds, client = prisma) {
           })),
         },
         statusLogs: {
-          create: { fromStatus: null, toStatus: "NEW", reason: "Sent to kitchen" },
+          create: {
+            fromStatus: null,
+            toStatus: "NEW",
+            reason: "Sent to kitchen",
+          },
         },
       },
       include: {
@@ -86,7 +108,10 @@ export async function sendToKitchen(orderId, orderItemIds, client = prisma) {
     createdKots.push(kitchenOrder);
   }
 
-  await client.order.update({ where: { id: orderId }, data: { status: "ACCEPTED" } });
+  await client.order.update({
+    where: { id: orderId },
+    data: { status: "ACCEPTED" },
+  });
 
   // Return a single KOT directly when there's only one (the common case),
   // otherwise the full array — callers should handle both, but this keeps
@@ -119,7 +144,13 @@ export async function getActiveKitchenDisplay(kitchenSectionId) {
       ...(kitchenSectionId ? { kitchenSectionId } : {}),
     },
     include: {
-      order: { select: { orderNumber: true, orderType: true, table: { select: { name: true } } } },
+      order: {
+        select: {
+          orderNumber: true,
+          orderType: true,
+          table: { select: { name: true } },
+        },
+      },
       kitchenSection: true,
       chef: { select: { fullName: true } },
       items: { include: { orderItem: { include: { menuItem: true } } } },
@@ -153,7 +184,11 @@ const ORDER_SYNC_FROM_KOT_STATUS = {
   SERVED: { from: ["READY"], to: "SERVED" },
 };
 
-export async function updateKotStatus(id, status, { changedById, reason } = {}) {
+export async function updateKotStatus(
+  id,
+  status,
+  { changedById, reason } = {},
+) {
   const existing = await prisma.kitchenOrder.findUnique({ where: { id } });
   if (!existing) throw new Error("Kitchen order not found");
 
@@ -166,7 +201,12 @@ export async function updateKotStatus(id, status, { changedById, reason } = {}) 
       ...(timestampField ? { [timestampField]: new Date() } : {}),
       ...(status === "RECALLED" ? { recallCount: { increment: 1 } } : {}),
       statusLogs: {
-        create: { fromStatus: existing.status, toStatus: status, changedById, reason },
+        create: {
+          fromStatus: existing.status,
+          toStatus: status,
+          changedById,
+          reason,
+        },
       },
     },
   });
@@ -175,7 +215,10 @@ export async function updateKotStatus(id, status, { changedById, reason } = {}) 
   if (sync) {
     const order = await prisma.order.findUnique({ where: { id: kot.orderId } });
     if (order && sync.from.includes(order.status)) {
-      await prisma.order.update({ where: { id: kot.orderId }, data: { status: sync.to } });
+      await prisma.order.update({
+        where: { id: kot.orderId },
+        data: { status: sync.to },
+      });
     }
   }
 
@@ -190,7 +233,9 @@ export async function addKitchenNote(kitchenOrderId, chefId, note) {
   const trimmed = (note || "").trim();
   if (!trimmed) throw new Error("Note text is required");
 
-  const kitchenOrder = await prisma.kitchenOrder.findUnique({ where: { id: kitchenOrderId } });
+  const kitchenOrder = await prisma.kitchenOrder.findUnique({
+    where: { id: kitchenOrderId },
+  });
   if (!kitchenOrder) throw new Error("Kitchen order not found");
 
   return prisma.kitchenNote.create({

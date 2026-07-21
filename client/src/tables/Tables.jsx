@@ -9,17 +9,32 @@ import {
   createTable,
   updateTable,
   deleteTable,
+  getWaiters,
+  assignTables,
+  assignFloorToWaiter,
+  assignAllTablesToWaiter,
+  unassignTable,
 } from "./api/tablesManagementApi";
-import { Plus } from "lucide-react";
+import { Plus, UserCog, X } from "lucide-react";
 import FloorTabs from "./components/FloorTabs";
 import TableCard from "./components/TableCard";
 import AddFloorModal from "./components/AddFloorModal";
 import AddTableModal from "./components/AddTableModal";
+import AssignWaiterModal from "./components/AssignWaiterModal";
+import MyTablesView from "./components/MyTablesView";
+import { useAuth } from "../auth/AuthContext";
 
-function Button({ variant = "primary", className = "", disabled, children, ...props }) {
+function Button({
+  variant = "primary",
+  className = "",
+  disabled,
+  children,
+  ...props
+}) {
   const variants = {
     primary: "bg-[#1C3044] text-white hover:bg-[#27435B] shadow-sm",
-    secondary: "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50",
+    secondary:
+      "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50",
   };
   return (
     <button
@@ -33,6 +48,18 @@ function Button({ variant = "primary", className = "", disabled, children, ...pr
 }
 
 export default function Tables() {
+  const { user } = useAuth();
+
+  // Waiters get a completely different, read-only screen — their own
+  // assigned tables with live order/payment status. Nothing below this
+  // point (management state, assignment, CRUD) is ever reachable for them,
+  // since the backend also enforces it independently.
+  if (user?.role === "WAITER") {
+    return <MyTablesView />;
+  }
+
+  const canAssign = ["OWNER", "ADMIN", "MANAGER"].includes(user?.role);
+
   const [floors, setFloors] = useState([]);
   const [selectedFloorId, setSelectedFloorId] = useState(null);
   const [tables, setTables] = useState([]);
@@ -49,6 +76,14 @@ export default function Tables() {
   const [editingTable, setEditingTable] = useState(null);
   const [confirmDeleteTableId, setConfirmDeleteTableId] = useState(null);
   const [deletingTableId, setDeletingTableId] = useState(null);
+
+  // ---- Waiter assignment state ----
+  const [assignMode, setAssignMode] = useState(false);
+  const [selectedTableIds, setSelectedTableIds] = useState([]);
+  const [waiters, setWaiters] = useState([]);
+  const [waitersLoading, setWaitersLoading] = useState(false);
+  const [assignModalScope, setAssignModalScope] = useState(null); // "selected" | "floor" | "all"
+  const [unassigningTableId, setUnassigningTableId] = useState(null);
 
   // Load floors once on mount; select the first floor by default.
   useEffect(() => {
@@ -171,7 +206,67 @@ export default function Tables() {
     }
   }
 
+  // ---- Waiter assignment ----
+
+  async function loadWaiters() {
+    setWaitersLoading(true);
+    try {
+      setWaiters(await getWaiters());
+    } catch (err) {
+      setError(err.message || "Couldn't load waiters.");
+    } finally {
+      setWaitersLoading(false);
+    }
+  }
+
+  function toggleAssignMode() {
+    setAssignMode((prev) => !prev);
+    setSelectedTableIds([]);
+  }
+
+  function toggleSelectTable(id) {
+    setSelectedTableIds((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id],
+    );
+  }
+
+  function openAssignModal(scope) {
+    setAssignModalScope(scope);
+    loadWaiters();
+  }
+
+  async function handleConfirmAssign(waiterId) {
+    if (assignModalScope === "selected") {
+      const updated = await assignTables(selectedTableIds, waiterId);
+      setTables((prev) => {
+        const byId = Object.fromEntries(updated.map((t) => [t.id, t]));
+        return prev.map((t) => byId[t.id] || t);
+      });
+      setSelectedTableIds([]);
+      setAssignMode(false);
+    } else if (assignModalScope === "floor") {
+      await assignFloorToWaiter(selectedFloorId, waiterId);
+      await loadTables(selectedFloorId);
+    } else if (assignModalScope === "all") {
+      await assignAllTablesToWaiter(waiterId);
+      await loadTables(selectedFloorId);
+    }
+  }
+
+  async function handleUnassign(tableId) {
+    setUnassigningTableId(tableId);
+    try {
+      const updated = await unassignTable(tableId);
+      setTables((prev) => prev.map((t) => (t.id === tableId ? updated : t)));
+    } catch (err) {
+      setError(err.message || "Couldn't unassign the table.");
+    } finally {
+      setUnassigningTableId(null);
+    }
+  }
+
   const hasFloors = floors.length > 0;
+  const selectedFloor = floors.find((f) => f.id === selectedFloorId);
 
   return (
     <div className="mx-auto max-w-8xl px-4 py-6 sm:px-6">
@@ -179,27 +274,97 @@ export default function Tables() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-[30px] font-bold text-[#1C3044]">Tables</h1>
-          <p className="text-sm text-slate-400">Manage floors and tables across your restaurant.</p>
+          <p className="text-sm text-slate-400">
+            Manage floors and tables across your restaurant.
+          </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={openAddFloor}>
-            <Plus className="h-4 w-4" />
-            Add Floor
-          </Button>
-          <Button variant="primary" onClick={openAddTable} disabled={!hasFloors}>
-            <Plus className="h-4 w-4" />
-            Add Table
-          </Button>
+        <div className="flex flex-wrap gap-2">
+          {canAssign && (
+            <Button
+              variant={assignMode ? "primary" : "secondary"}
+              onClick={toggleAssignMode}
+              disabled={!hasFloors}
+            >
+              {assignMode ? (
+                <X className="h-4 w-4" />
+              ) : (
+                <UserCog className="h-4 w-4" />
+              )}
+              {assignMode ? "Cancel Assign" : "Assign Waiter"}
+            </Button>
+          )}
+          {!assignMode && (
+            <>
+              <Button variant="secondary" onClick={openAddFloor}>
+                <Plus className="h-4 w-4" />
+                Add Floor
+              </Button>
+              <Button
+                variant="primary"
+                onClick={openAddTable}
+                disabled={!hasFloors}
+              >
+                <Plus className="h-4 w-4" />
+                Add Table
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
+      {/* Assign-mode toolbar: pick a scope once tables are selected, or assign
+          the whole floor / every table in one click without selecting anything. */}
+      {assignMode && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
+          <p className="text-sm text-slate-600">
+            {selectedTableIds.length > 0
+              ? `${selectedTableIds.length} table${selectedTableIds.length === 1 ? "" : "s"} selected`
+              : "Tap tables to select them, or assign a whole floor / everything below."}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              className="!px-3 !py-1.5 !text-xs"
+              disabled={selectedTableIds.length === 0}
+              onClick={() => openAssignModal("selected")}
+            >
+              Assign Selected
+            </Button>
+            <Button
+              variant="secondary"
+              className="!px-3 !py-1.5 !text-xs"
+              disabled={!selectedFloorId}
+              onClick={() => openAssignModal("floor")}
+            >
+              Assign Whole Floor
+              {selectedFloor ? ` (${selectedFloor.name})` : ""}
+            </Button>
+            <Button
+              variant="secondary"
+              className="!px-3 !py-1.5 !text-xs"
+              onClick={() => openAssignModal("all")}
+            >
+              Assign All Tables
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+          {error}
+        </div>
+      )}
 
       {floorsLoading ? (
-        <div className="py-16 text-center text-sm text-slate-400">Loading floors…</div>
+        <div className="py-16 text-center text-sm text-slate-400">
+          Loading floors…
+        </div>
       ) : !hasFloors ? (
         <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
-          <p className="text-sm font-medium text-slate-500">No floors available. Please add a floor first.</p>
+          <p className="text-sm font-medium text-slate-500">
+            No floors available. Please add a floor first.
+          </p>
           <Button className="mt-4" onClick={openAddFloor}>
             <Plus className="h-4 w-4" />
             Add Floor
@@ -212,15 +377,18 @@ export default function Tables() {
               floors={floors}
               selectedFloorId={selectedFloorId}
               onSelect={setSelectedFloorId}
-              onEditFloor={openEditFloor}
-              onDeleteFloor={(floor) => setConfirmDeleteFloor(floor)}
+              onEditFloor={assignMode ? undefined : openEditFloor}
+              onDeleteFloor={
+                assignMode ? undefined : (floor) => setConfirmDeleteFloor(floor)
+              }
             />
           </div>
 
           {confirmDeleteFloor && (
             <div className="mt-3 flex items-center justify-between rounded-lg bg-red-50 px-3 py-2">
               <span className="text-sm text-red-600">
-                Delete "{confirmDeleteFloor.name}"? Its tables will become unassigned, not deleted.
+                Delete "{confirmDeleteFloor.name}"? Its tables will become
+                unassigned, not deleted.
               </span>
               <div className="flex gap-3">
                 <button
@@ -241,10 +409,14 @@ export default function Tables() {
 
           <div className="mt-5">
             {tablesLoading ? (
-              <div className="py-12 text-center text-sm text-slate-400">Loading tables…</div>
+              <div className="py-12 text-center text-sm text-slate-400">
+                Loading tables…
+              </div>
             ) : tables.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 py-16 text-center">
-                <p className="text-sm font-medium text-slate-500">No tables on this floor yet.</p>
+                <p className="text-sm font-medium text-slate-500">
+                  No tables on this floor yet.
+                </p>
                 <Button className="mt-4" onClick={openAddTable}>
                   <Plus className="h-4 w-4" />
                   Add Table
@@ -262,6 +434,11 @@ export default function Tables() {
                     confirmingDelete={confirmDeleteTableId === table.id}
                     onRequestDelete={setConfirmDeleteTableId}
                     onCancelDelete={() => setConfirmDeleteTableId(null)}
+                    assignMode={assignMode}
+                    selected={selectedTableIds.includes(table.id)}
+                    onToggleSelect={toggleSelectTable}
+                    onUnassign={canAssign ? handleUnassign : undefined}
+                    unassigning={unassigningTableId === table.id}
                   />
                 ))}
               </div>
@@ -284,6 +461,17 @@ export default function Tables() {
         defaultFloorId={selectedFloorId}
         editingTable={editingTable}
         onSave={handleSaveTable}
+      />
+
+      <AssignWaiterModal
+        open={!!assignModalScope}
+        onClose={() => setAssignModalScope(null)}
+        scope={assignModalScope}
+        selectedCount={selectedTableIds.length}
+        floorName={selectedFloor?.name}
+        waiters={waiters}
+        waitersLoading={waitersLoading}
+        onConfirm={handleConfirmAssign}
       />
     </div>
   );

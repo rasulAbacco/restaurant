@@ -13,6 +13,46 @@ async function generateEmployeeCode() {
   return `EMP-${String(next).padStart(4, "0")}`;
 }
 
+// FIX: <input type="date"> sends a date-only string like "2026-07-21".
+// Prisma's query engine (unlike the plain JS `Date` constructor) requires a
+// full ISO-8601 DateTime and throws "premature end of input. Expected
+// ISO-8601 DateTime." on a bare date string — this is what was causing
+// every Add Employee submission with a Date of Birth / Joining Date to
+// 400. Converting to a real Date object here fixes it for both fields,
+// for both create and update, without the frontend needing to change.
+//
+//   - undefined -> undefined  (field simply not included in the update)
+//   - null / "" -> null       (explicitly clear the field, e.g. optional dob)
+//   - otherwise -> a Date instance, or we throw a friendly error
+function toDateTimeOrNull(value, fieldLabel) {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`"${fieldLabel}" is not a valid date.`);
+  }
+  return date;
+}
+
+// Applies the date coercion above to whichever of dob / joiningDate are
+// present in the payload, leaving every other field untouched.
+function normalizeEmployeeDates(employeeData) {
+  const normalized = { ...employeeData };
+
+  if ("dob" in normalized) {
+    normalized.dob = toDateTimeOrNull(normalized.dob, "Date of Birth");
+  }
+  if ("joiningDate" in normalized) {
+    normalized.joiningDate = toDateTimeOrNull(
+      normalized.joiningDate,
+      "Joining Date",
+    );
+  }
+
+  return normalized;
+}
+
 export async function listEmployees({
   search,
   department,
@@ -78,7 +118,8 @@ export async function getEmployeeById(id) {
 }
 
 export async function createEmployee(payload) {
-  const { address, ...employeeData } = payload;
+  const { address, ...rest } = payload;
+  const employeeData = normalizeEmployeeDates(rest);
   const employeeCode = await generateEmployeeCode();
 
   try {
@@ -106,7 +147,8 @@ export async function createEmployee(payload) {
 }
 
 export async function updateEmployee(id, payload) {
-  const { address, ...employeeData } = payload;
+  const { address, ...rest } = payload;
+  const employeeData = normalizeEmployeeDates(rest);
 
   try {
     return await prisma.employee.update({

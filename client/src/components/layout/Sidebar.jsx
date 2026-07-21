@@ -23,9 +23,8 @@ import {
   FiCheckCircle,
   FiMonitor,
   FiExternalLink,
-  
 } from "react-icons/fi";
-import {TableProperties } from "lucide-react"
+import { TableProperties } from "lucide-react";
 
 import { useAuth } from "../../auth/AuthContext";
 
@@ -81,7 +80,7 @@ const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
     {
       name: "Tables",
       path: "/tables",
-      icon: <TableProperties  />,
+      icon: <TableProperties />,
     },
 
     {
@@ -89,11 +88,11 @@ const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
       path: "/kitchen",
       icon: <FiCoffee />,
     },
-  //   {
-  //   name: "Kitchen Notes",
-  //   path: "/kitchen/notes",
-  //   icon: <FiFileText />,
-  // },
+    //   {
+    //   name: "Kitchen Notes",
+    //   path: "/kitchen/notes",
+    //   icon: <FiFileText />,
+    // },
 
     {
       name: "Orders",
@@ -300,41 +299,46 @@ const Sidebar = ({ mobileOpen, onClose, collapsed, onToggleCollapse }) => {
   ];
 
   // =====================================================
-// WAITER MENU
-// =====================================================
+  // WAITER MENU
+  // =====================================================
 
-const waiterMenu = [
-  {
-    name: "Dashboard",
-    path: "/dashboard",
-    icon: <FiHome />,
-  },
-  {
-    name: "POS",
-    path: "/pos",
-    icon: <FiShoppingCart />,
-  },
-  {
-    name: "Orders",
-    path: "/pos/orders",
-    icon: <FiClipboard />,
-  },
-  {
-    name: "Menu",
-    path: "/menu",
-    icon: <FiCoffee />,
-  },
-  {
-    name: "Billing",
-    path: "/billing",
-    icon: <FiFileText />,
-  },
-  {
-    name: "Payments",
-    path: "/payments",
-    icon: <FiCreditCard />,
-  },
-];
+  const waiterMenu = [
+    {
+      name: "Dashboard",
+      path: "/dashboard",
+      icon: <FiHome />,
+    },
+    {
+      name: "POS",
+      path: "/pos",
+      icon: <FiShoppingCart />,
+    },
+    {
+      name: "My Tables",
+      path: "/tables",
+      icon: <TableProperties />,
+    },
+    {
+      name: "Orders",
+      path: "/pos/orders",
+      icon: <FiClipboard />,
+    },
+    {
+      name: "Menu",
+      path: "/menu",
+      icon: <FiCoffee />,
+    },
+    {
+      name: "Billing",
+      path: "/billing",
+      icon: <FiFileText />,
+    },
+    {
+      name: "Payments",
+      path: "/payments",
+      icon: <FiCreditCard />,
+    },
+  ];
 
   // =====================================================
   // KITCHEN MENU

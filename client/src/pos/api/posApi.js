@@ -11,7 +11,9 @@ async function request(path, options = {}) {
   if (!ok) {
     // Controllers in this project return { message: "generic wrapper", error: "specific reason" } —
     // surface the specific one when present, since the generic message alone hides the real cause.
-    const detail = data?.error ? `${data.message}: ${data.error}` : data?.message;
+    const detail = data?.error
+      ? `${data.message}: ${data.error}`
+      : data?.message;
     throw new Error(detail || "Request failed");
   }
   return data;
@@ -40,12 +42,19 @@ export const getTables = (params = {}) => {
 export const getFloors = () => request("/pos/tables/floors");
 
 export const createFloor = (payload) =>
-  request("/pos/tables/floors", { method: "POST", body: JSON.stringify(payload) });
+  request("/pos/tables/floors", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
 export const updateFloor = (id, payload) =>
-  request(`/pos/tables/floors/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+  request(`/pos/tables/floors/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 
-export const deleteFloor = (id) => request(`/pos/tables/floors/${id}`, { method: "DELETE" });
+export const deleteFloor = (id) =>
+  request(`/pos/tables/floors/${id}`, { method: "DELETE" });
 
 // Table-wise board for the Orders page and the POS "select a table" strip —
 // each table with its active order's customer, item count, total, and
@@ -59,9 +68,13 @@ export const createTable = (payload) =>
   request("/pos/tables", { method: "POST", body: JSON.stringify(payload) });
 
 export const updateTable = (id, payload) =>
-  request(`/pos/tables/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+  request(`/pos/tables/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 
-export const deleteTable = (id) => request(`/pos/tables/${id}`, { method: "DELETE" });
+export const deleteTable = (id) =>
+  request(`/pos/tables/${id}`, { method: "DELETE" });
 
 export const updateOrderStatus = (orderId, status) =>
   request(`/pos/orders/${orderId}/status`, {
@@ -69,7 +82,8 @@ export const updateOrderStatus = (orderId, status) =>
     body: JSON.stringify({ status }),
   });
 
-export const searchCustomers = (q) => request(`/pos/customers/search?q=${encodeURIComponent(q)}`);
+export const searchCustomers = (q) =>
+  request(`/pos/customers/search?q=${encodeURIComponent(q)}`);
 export const createCustomer = (payload) =>
   request("/pos/customers", { method: "POST", body: JSON.stringify(payload) });
 
@@ -80,12 +94,21 @@ export const createOrder = (payload) =>
 // backend transaction. If the kitchen send fails, nothing is saved at all.
 // Use this instead of createOrder + sendToKitchen as two separate calls.
 export const placeOrderAndSendToKitchen = (payload) =>
-  request("/pos/orders/place", { method: "POST", body: JSON.stringify(payload) });
+  request("/pos/orders/place", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
 // Fetches a single order with its full item/payment/kitchen detail — used
 // when a staff member taps an OCCUPIED table to see what's already ordered
 // before adding more items to it.
 export const getOrder = (id) => request(`/pos/orders/${id}`);
+
+// Owner-only: permanently removes an order and everything tied to it
+// (items, kitchen tickets, payments, invoice) — see pos.service.js for the
+// cascade. Used by the Payments page's Delete action.
+export const deleteOrder = (id) =>
+  request(`/pos/orders/${id}`, { method: "DELETE" });
 
 // Adds new items to an order that's already been placed (e.g. the customer
 // asks for 2 more items mid-meal). Returns { order, newItems } — newItems is
@@ -126,7 +149,8 @@ export const getAddOns = () => request(`/pos/add-ons?isEnabled=true`);
 
 // Read-only bill preview for the Billing & Payment modal: items, subtotal,
 // CGST/SGST, discount, grand total, and anything already paid so far.
-export const getBillingSummary = (orderId) => request(`/pos/billing/orders/${orderId}/summary`);
+export const getBillingSummary = (orderId) =>
+  request(`/pos/billing/orders/${orderId}/summary`);
 
 // payload: { payments: [{ method, amount, transactionReference? }], discount? }
 // Records the payment(s), and only on full payment marks the order

@@ -1,6 +1,8 @@
 // server/src/pos/tables/tables.service.js
 import prisma from "../../config/prisma.js";
 
+const WAITER_SELECT = { id: true, fullName: true, employeeCode: true };
+
 // ---------------------------------------------------------------------------
 // Floors — power the floor tabs on the Tables Management page. A floor is
 // just a named grouping that tables belong to (floorId on RestaurantTable).
@@ -28,19 +30,40 @@ export async function updateFloor(id, payload) {
 // Tables on a deleted floor are not deleted with it — they're just
 // unassigned (floorId set to null) so no order/table data is ever lost.
 export async function deleteFloor(id) {
-  await prisma.restaurantTable.updateMany({ where: { floorId: id }, data: { floorId: null } });
+  await prisma.restaurantTable.updateMany({
+    where: { floorId: id },
+    data: { floorId: null },
+  });
   return prisma.floor.delete({ where: { id } });
 }
 
-export async function listTables({ status, section, store, floorId }) {
+export async function listTables({
+  status,
+  section,
+  store,
+  floorId,
+  waiterId,
+}) {
   return prisma.restaurantTable.findMany({
     where: {
       ...(status ? { status } : {}),
       ...(section ? { section } : {}),
       ...(store ? { store } : {}),
       ...(floorId ? { floorId } : {}),
+      // Present only when the caller is a WAITER (injected by
+      // tables.controller.js) — restricts the result to just their own
+      // assigned tables. Absent for everyone else, so Owner/Admin/Manager/
+      // Cashier still see every table as before.
+      ...(waiterId ? { waiterId } : {}),
     },
-    include: { orders: { where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } } } },
+    include: {
+      orders: {
+        where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } },
+      },
+      // Waiter assignment — shown as a badge on each TableCard, and used by
+      // the Owner/Manager "Assign Waiter" screen to know who already has what.
+      waiter: { select: WAITER_SELECT },
+    },
     orderBy: { name: "asc" },
   });
 }
@@ -49,13 +72,20 @@ export async function listTables({ status, section, store, floorId }) {
 // "current" kitchen status for an order that may have multiple tickets
 // (one per kitchen section) — we show the LEAST advanced one, since a table
 // isn't really "Ready" until every section's ticket is ready.
-const KITCHEN_STAGE_RANK = { NEW: 0, ACCEPTED: 1, PREPARING: 2, READY: 3, SERVED: 4, COMPLETED: 5 };
+const KITCHEN_STAGE_RANK = {
+  NEW: 0,
+  ACCEPTED: 1,
+  PREPARING: 2,
+  READY: 3,
+  SERVED: 4,
+  COMPLETED: 5,
+};
 
 function deriveKitchenStatus(kitchenOrders) {
   const active = kitchenOrders.filter((k) => k.status !== "CANCELLED");
   if (active.length === 0) return null;
   return active.reduce((least, k) =>
-    KITCHEN_STAGE_RANK[k.status] < KITCHEN_STAGE_RANK[least.status] ? k : least
+    KITCHEN_STAGE_RANK[k.status] < KITCHEN_STAGE_RANK[least.status] ? k : least,
   ).status;
 }
 
@@ -71,13 +101,15 @@ function deriveKitchenStatus(kitchenOrders) {
 // updated code doesn't get deployed), the two pages silently drift apart.
 // Reading the same underlying rows both pages already share removes the
 // possibility of drift entirely — there's nothing to keep in sync.
-export async function getTablesBoard({ store, floorId } = {}) {
+export async function getTablesBoard({ store, floorId, waiterId } = {}) {
   const tables = await prisma.restaurantTable.findMany({
     where: {
       ...(store ? { store } : {}),
       ...(floorId ? { floorId } : {}),
+      ...(waiterId ? { waiterId } : {}),
     },
     include: {
+      waiter: { select: WAITER_SELECT },
       orders: {
         where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } },
         orderBy: { createdAt: "desc" },
@@ -100,6 +132,7 @@ export async function getTablesBoard({ store, floorId } = {}) {
       capacity: table.capacity,
       section: table.section,
       status: table.status,
+      waiter: table.waiter,
       order: order
         ? {
             id: order.id,
@@ -121,16 +154,28 @@ export async function getTablesBoard({ store, floorId } = {}) {
 export async function getTableById(id) {
   return prisma.restaurantTable.findUnique({
     where: { id },
-    include: { orders: { where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } } } },
+    include: {
+      orders: {
+        where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } },
+      },
+      waiter: { select: WAITER_SELECT },
+    },
   });
 }
 
 export async function createTable(payload) {
-  return prisma.restaurantTable.create({ data: payload });
+  return prisma.restaurantTable.create({
+    data: payload,
+    include: { waiter: { select: WAITER_SELECT } },
+  });
 }
 
 export async function updateTable(id, payload) {
-  return prisma.restaurantTable.update({ where: { id }, data: payload });
+  return prisma.restaurantTable.update({
+    where: { id },
+    data: payload,
+    include: { waiter: { select: WAITER_SELECT } },
+  });
 }
 
 export async function deleteTable(id) {
@@ -140,13 +185,246 @@ export async function deleteTable(id) {
 // Merges the source table's active order into the target table, freeing the source.
 export async function mergeTables(sourceTableId, targetTableId) {
   const sourceOrder = await prisma.order.findFirst({
-    where: { tableId: sourceTableId, status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } },
+    where: {
+      tableId: sourceTableId,
+      status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] },
+    },
   });
   if (!sourceOrder) throw new Error("No active order on source table");
 
-  await prisma.order.update({ where: { id: sourceOrder.id }, data: { tableId: targetTableId } });
-  await prisma.restaurantTable.update({ where: { id: sourceTableId }, data: { status: "FREE" } });
-  await prisma.restaurantTable.update({ where: { id: targetTableId }, data: { status: "OCCUPIED" } });
+  await prisma.order.update({
+    where: { id: sourceOrder.id },
+    data: { tableId: targetTableId },
+  });
+  await prisma.restaurantTable.update({
+    where: { id: sourceTableId },
+    data: { status: "FREE" },
+  });
+  await prisma.restaurantTable.update({
+    where: { id: targetTableId },
+    data: { status: "OCCUPIED" },
+  });
 
-  return prisma.order.findUnique({ where: { id: sourceOrder.id }, include: { items: true } });
+  return prisma.order.findUnique({
+    where: { id: sourceOrder.id },
+    include: { items: true },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// WAITER ASSIGNMENT
+//
+// A table can be assigned to at most one waiter at a time
+// (RestaurantTable.waiterId, added alongside this feature). Owner/Admin/
+// Manager assign tables individually, by whole floor, or "all tables" in
+// one go. A waiter's own view (getMyTables / getTableDetailForWaiter) is
+// always scoped to tables where waiterId === their own employee id — they
+// never see another waiter's tables, orders, or payments.
+// ---------------------------------------------------------------------------
+
+export async function listWaiters({ store } = {}) {
+  const employees = await prisma.employee.findMany({
+    where: {
+      status: "ACTIVE",
+      ...(store ? { store } : {}),
+      userAccount: { role: "WAITER", isActive: true },
+    },
+    select: {
+      id: true,
+      fullName: true,
+      employeeCode: true,
+      photoUrl: true,
+      _count: { select: { assignedTables: true } },
+    },
+    orderBy: { fullName: "asc" },
+  });
+
+  return employees.map((e) => ({
+    id: e.id,
+    fullName: e.fullName,
+    employeeCode: e.employeeCode,
+    photoUrl: e.photoUrl,
+    assignedTableCount: e._count.assignedTables,
+  }));
+}
+
+async function assertWaiterExists(waiterId) {
+  const waiter = await prisma.employee.findFirst({
+    where: { id: waiterId, userAccount: { role: "WAITER" } },
+    select: { id: true },
+  });
+  if (!waiter) {
+    throw new Error("Selected employee is not an active waiter");
+  }
+}
+
+// Assign a specific list of table ids to a waiter.
+export async function assignTables({ tableIds, waiterId }) {
+  if (!Array.isArray(tableIds) || tableIds.length === 0) {
+    throw new Error("tableIds must be a non-empty array");
+  }
+  await assertWaiterExists(waiterId);
+
+  await prisma.restaurantTable.updateMany({
+    where: { id: { in: tableIds } },
+    data: { waiterId, assignedAt: new Date() },
+  });
+
+  return prisma.restaurantTable.findMany({
+    where: { id: { in: tableIds } },
+    include: { waiter: { select: WAITER_SELECT } },
+  });
+}
+
+// Assign every table on one floor (e.g. "Ground Floor") to a waiter.
+export async function assignFloorToWaiter({ floorId, waiterId }) {
+  if (!floorId) throw new Error("floorId is required");
+  await assertWaiterExists(waiterId);
+
+  const result = await prisma.restaurantTable.updateMany({
+    where: { floorId },
+    data: { waiterId, assignedAt: new Date() },
+  });
+
+  return { count: result.count };
+}
+
+// Assign every table (optionally scoped to one store) to a single waiter.
+export async function assignAllTables({ waiterId, store }) {
+  await assertWaiterExists(waiterId);
+
+  const result = await prisma.restaurantTable.updateMany({
+    where: store ? { store } : {},
+    data: { waiterId, assignedAt: new Date() },
+  });
+
+  return { count: result.count };
+}
+
+// Remove a table's assignment (goes back to unassigned / any-waiter pool).
+export async function unassignTable(id) {
+  return prisma.restaurantTable.update({
+    where: { id },
+    data: { waiterId: null, assignedAt: null },
+    include: { waiter: { select: WAITER_SELECT } },
+  });
+}
+
+// Remove ALL of a waiter's assignments at once (e.g. before reassigning,
+// or when the employee goes off shift / is removed).
+export async function unassignAllForWaiter(waiterId) {
+  const result = await prisma.restaurantTable.updateMany({
+    where: { waiterId },
+    data: { waiterId: null, assignedAt: null },
+  });
+  return { count: result.count };
+}
+
+// ==============================================
+// WAITER'S OWN VIEW — "My Tables"
+// Scoped strictly to tables where waiterId === the logged-in waiter.
+// ==============================================
+
+export async function getMyTables(waiterId) {
+  const tables = await prisma.restaurantTable.findMany({
+    where: { waiterId },
+    include: {
+      floor: { select: { id: true, name: true } },
+      orders: {
+        where: { status: { notIn: ["COMPLETED", "CANCELLED", "REFUNDED"] } },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          orderNumber: true,
+          status: true,
+          grandTotal: true,
+          numberOfGuests: true,
+          createdAt: true,
+          payments: {
+            select: { status: true, method: true, amount: true },
+            orderBy: { createdAt: "desc" },
+          },
+        },
+      },
+    },
+    orderBy: [{ floor: { name: "asc" } }, { name: "asc" }],
+  });
+
+  return tables.map((t) => {
+    const order = t.orders[0] || null;
+    const paid = order
+      ? order.payments.reduce(
+          (sum, p) => (p.status === "PAID" ? sum + Number(p.amount) : sum),
+          0,
+        )
+      : 0;
+    const paymentStatus = !order
+      ? null
+      : paid >= Number(order.grandTotal)
+        ? "PAID"
+        : paid > 0
+          ? "PARTIALLY_PAID"
+          : "UNPAID";
+
+    return {
+      id: t.id,
+      name: t.name,
+      capacity: t.capacity,
+      section: t.section,
+      status: t.status,
+      floor: t.floor,
+      order: order
+        ? {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            grandTotal: order.grandTotal,
+            numberOfGuests: order.numberOfGuests,
+            createdAt: order.createdAt,
+            paymentStatus,
+            amountPaid: paid,
+          }
+        : null,
+    };
+  });
+}
+
+// Detail for a single table — order items + full payment history. Scoped
+// to waiterId so a waiter can only ever pull up tables assigned to them;
+// returns null (controller -> 404) for anyone else's table, same as if it
+// didn't exist, so we don't leak which tables exist.
+export async function getTableDetailForWaiter(tableId, waiterId) {
+  return prisma.restaurantTable.findFirst({
+    where: { id: tableId, waiterId },
+    include: {
+      floor: { select: { id: true, name: true } },
+      orders: {
+        orderBy: { createdAt: "desc" },
+        take: 10,
+        include: {
+          items: {
+            select: {
+              id: true,
+              quantity: true,
+              unitPrice: true,
+              totalPrice: true,
+              notes: true,
+              menuItem: { select: { name: true } },
+            },
+          },
+          payments: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              id: true,
+              method: true,
+              amount: true,
+              status: true,
+              paidAt: true,
+            },
+          },
+        },
+      },
+    },
+  });
 }

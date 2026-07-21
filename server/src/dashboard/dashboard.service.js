@@ -441,16 +441,26 @@ export const getRecentActivities = async ({ limit = 6 } = {}) => {
 export const getWaiterSummary = async (waiterId, store = DEFAULT_STORE) => {
   const todayStart = startOfDay();
 
-  const [activeOrders, myOrdersToday, tablesOccupied] = await Promise.all([
-    prisma.order.count({
-      where: {
-        waiterId,
-        status: { in: ["NEW", "ACCEPTED", "PREPARING", "READY", "SERVED"] },
-      },
-    }),
-    prisma.order.count({ where: { waiterId, createdAt: { gte: todayStart } } }),
-    prisma.restaurantTable.count({ where: { store, status: "OCCUPIED" } }),
-  ]);
+  // NOTE: tablesOccupied and assignedTables are now scoped to tables
+  // actually ASSIGNED to this waiter (RestaurantTable.waiterId), not every
+  // occupied table in the store — a waiter should only see the state of
+  // their own section, same as the "My Tables" screen under /tables.
+  const [activeOrders, myOrdersToday, assignedTables, tablesOccupied] =
+    await Promise.all([
+      prisma.order.count({
+        where: {
+          waiterId,
+          status: { in: ["NEW", "ACCEPTED", "PREPARING", "READY", "SERVED"] },
+        },
+      }),
+      prisma.order.count({
+        where: { waiterId, createdAt: { gte: todayStart } },
+      }),
+      prisma.restaurantTable.count({ where: { store, waiterId } }),
+      prisma.restaurantTable.count({
+        where: { store, waiterId, status: "OCCUPIED" },
+      }),
+    ]);
 
-  return { activeOrders, myOrdersToday, tablesOccupied };
+  return { activeOrders, myOrdersToday, assignedTables, tablesOccupied };
 };

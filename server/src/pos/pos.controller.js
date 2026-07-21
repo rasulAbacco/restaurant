@@ -5,7 +5,9 @@ export async function getOrders(req, res) {
   try {
     res.json(await posService.listOrders(req.query));
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch orders", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch orders", error: err.message });
   }
 }
 
@@ -15,7 +17,9 @@ export async function getOrder(req, res) {
     if (!order) return res.status(404).json({ message: "Order not found" });
     res.json(order);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch order", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch order", error: err.message });
   }
 }
 
@@ -24,7 +28,9 @@ export async function createOrder(req, res) {
     const order = await posService.createOrder(req.body);
     res.status(201).json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to create order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to create order", error: err.message });
   }
 }
 
@@ -37,16 +43,23 @@ export async function placeOrderAndSendToKitchen(req, res) {
     const order = await posService.createOrderAndSendToKitchen(req.body);
     res.status(201).json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to place order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to place order", error: err.message });
   }
 }
 
 export async function updateOrderStatus(req, res) {
   try {
-    const order = await posService.updateOrderStatus(req.params.id, req.body.status);
+    const order = await posService.updateOrderStatus(
+      req.params.id,
+      req.body.status,
+    );
     res.json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to update order status", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to update order status", error: err.message });
   }
 }
 
@@ -55,7 +68,9 @@ export async function cancelOrder(req, res) {
     const order = await posService.cancelOrder(req.params.id, req.body.reason);
     res.json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to cancel order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to cancel order", error: err.message });
   }
 }
 
@@ -64,7 +79,9 @@ export async function holdOrder(req, res) {
     const order = await posService.holdOrder(req.params.id);
     res.json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to hold order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to hold order", error: err.message });
   }
 }
 
@@ -73,24 +90,49 @@ export async function resumeOrder(req, res) {
     const order = await posService.resumeOrder(req.params.id);
     res.json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to resume order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to resume order", error: err.message });
   }
 }
 
 export async function transferTable(req, res) {
   try {
-    const order = await posService.transferTable(req.params.id, req.body.tableId);
+    const order = await posService.transferTable(
+      req.params.id,
+      req.body.tableId,
+    );
     res.json(order);
   } catch (err) {
-    res.status(400).json({ message: "Failed to transfer table", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to transfer table", error: err.message });
   }
 }
 
 export async function addItems(req, res) {
   try {
-    const result = await posService.addItemsToOrder(req.params.id, req.body.items);
+    const result = await posService.addItemsToOrder(
+      req.params.id,
+      req.body.items,
+    );
     res.json(result);
   } catch (err) {
-    res.status(400).json({ message: "Failed to add items to order", error: err.message });
+    res
+      .status(400)
+      .json({ message: "Failed to add items to order", error: err.message });
+  }
+}
+
+// Owner-only (enforced in pos.routes.js) — permanently removes the order
+// and its payments/invoice, used by the Payments page's Delete action.
+export async function deleteOrder(req, res) {
+  try {
+    const result = await posService.deleteOrder(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res
+      .status(400)
+      .json({ message: "Failed to delete order", error: err.message });
   }
 }

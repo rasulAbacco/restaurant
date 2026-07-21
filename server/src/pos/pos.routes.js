@@ -1,6 +1,7 @@
 // server/src/pos/pos.routes.js
 import { Router } from "express";
 import * as posController from "./pos.controller.js";
+import { requireRole } from "../auth/auth.middleware.js";
 import tablesRoutes from "./tables/tables.routes.js";
 import customersRoutes from "./customers/customers.routes.js";
 import addOnsRoutes from "./add-ons/addOns.routes.js";
@@ -25,6 +26,11 @@ router.post("/orders/:id/hold", posController.holdOrder);
 router.post("/orders/:id/resume", posController.resumeOrder);
 router.post("/orders/:id/transfer-table", posController.transferTable);
 router.post("/orders/:id/items", posController.addItems);
+// Owner-only — everything else on this router still has no per-route role
+// check (see comment above), but a permanent delete is destructive enough
+// that it's restricted regardless. requireAuth already ran at the /api/pos
+// mount in index.js, so req.user is guaranteed to exist here.
+router.delete("/orders/:id", requireRole("OWNER"), posController.deleteOrder);
 
 // Sub-domains, nested the same way employees/expenses do
 router.use("/tables", tablesRoutes);

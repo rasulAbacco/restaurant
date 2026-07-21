@@ -11,7 +11,10 @@
 // Requires `npm install exceljs` in this project.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ExcelJS from "exceljs";
-import { getOrders } from "../pos/api/posApi";
+import { Eye, Trash2 } from "lucide-react";
+import { getOrders, deleteOrder } from "../pos/api/posApi";
+import { useAuth } from "../auth/AuthContext";
+import OrderDetailModal from "./components/OrderDetailModal";
 
 const COMPLETED_ORDER_STATUSES = ["COMPLETED"];
 const CANCELLED_ORDER_STATUSES = ["CANCELLED", "REFUNDED"];
@@ -23,15 +26,49 @@ const AMBER = "FFD97706";
 const RED = "FFDC2626";
 const GREY = "FF94A3B8";
 
+// Clear, always-visible order-type badge — shown as its own column so
+// "Table / Type" is no longer one blended cell that's ambiguous for
+// Takeaway/Delivery orders (which have no table at all).
+const ORDER_TYPE_META = {
+  DINE_IN: {
+    label: "Dine In",
+    className: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  },
+  TAKEAWAY: {
+    label: "Takeaway",
+    className: "bg-orange-50 text-orange-700 border-orange-200",
+  },
+  DELIVERY: {
+    label: "Delivery",
+    className: "bg-cyan-50 text-cyan-700 border-cyan-200",
+  },
+};
+
 function todayRange() {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const end = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999,
+  );
   return { from: toDateInputValue(start), to: toDateInputValue(end) };
 }
 
+// FIX: was `d.toISOString().slice(0, 10)` — toISOString() converts to UTC
+// first, so in any timezone ahead of UTC (e.g. IST, UTC+5:30) a local
+// midnight rolls back to the previous day once converted (July 21 00:00
+// IST = July 20 18:30 UTC), making "Today"/"Yesterday" land on the wrong
+// date. Building the string from local getters avoids the UTC round-trip.
 function toDateInputValue(d) {
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function startOfDayISO(dateStr) {
@@ -92,16 +129,28 @@ function presetRange(key) {
 }
 
 export default function Payment() {
+  const { user } = useAuth();
+  const isOwner = user?.role === "OWNER";
+
   const [{ from, to }, setRange] = useState(todayRange());
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [exporting, setExporting] = useState(false);
 
+  // View / delete state
+  const [viewingOrderId, setViewingOrderId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
   const load = useCallback((fromDate, toDate) => {
     setLoading(true);
     setError(null);
-    getOrders({ from: startOfDayISO(fromDate), to: endOfDayISO(toDate), limit: 500 })
+    getOrders({
+      from: startOfDayISO(fromDate),
+      to: endOfDayISO(toDate),
+      limit: 500,
+    })
       .then((data) => setOrders(data?.data || []))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -159,6 +208,23 @@ export default function Payment() {
     };
   }, [orders]);
 
+  // ---- View / Delete handlers ----
+
+  async function handleDelete(orderId) {
+    setDeletingId(orderId);
+    try {
+      await deleteOrder(orderId);
+      setOrders((prev) => prev.filter((o) => o.id !== orderId));
+      if (viewingOrderId === orderId) setViewingOrderId(null);
+      setError(null);
+    } catch (err) {
+      setError(err.message || "Couldn't delete the order.");
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
+    }
+  }
+
   // Builds a formatted .xlsx of exactly what's on screen — same date range,
   // same summary numbers, same order rows — and triggers a browser download.
   async function handleExportExcel() {
@@ -176,7 +242,8 @@ export default function Payment() {
 
       sheet.columns = [
         { width: 18 }, // Order
-        { width: 22 }, // Table / Type
+        { width: 16 }, // Order Type
+        { width: 18 }, // Table
         { width: 14 }, // Status
         { width: 16 }, // Grand Total
         { width: 16 }, // Paid
@@ -185,21 +252,37 @@ export default function Payment() {
       ];
 
       // ---- Title ----
-      sheet.mergeCells("A1:G1");
+      sheet.mergeCells("A1:H1");
       const titleCell = sheet.getCell("A1");
       titleCell.value = "Payments Report";
-      titleCell.font = { name: "Arial", size: 16, bold: true, color: { argb: BRAND_DARK } };
+      titleCell.font = {
+        name: "Arial",
+        size: 16,
+        bold: true,
+        color: { argb: BRAND_DARK },
+      };
       sheet.getRow(1).height = 26;
 
-      sheet.mergeCells("A2:G2");
+      sheet.mergeCells("A2:H2");
       const rangeCell = sheet.getCell("A2");
-      rangeCell.value = from === to ? `Date: ${from}` : `Date Range: ${from} to ${to}`;
-      rangeCell.font = { name: "Arial", size: 11, italic: true, color: { argb: GREY } };
+      rangeCell.value =
+        from === to ? `Date: ${from}` : `Date Range: ${from} to ${to}`;
+      rangeCell.font = {
+        name: "Arial",
+        size: 11,
+        italic: true,
+        color: { argb: GREY },
+      };
 
       // ---- Summary block ----
       let r = 4;
       sheet.getCell(`A${r}`).value = "Summary";
-      sheet.getCell(`A${r}`).font = { name: "Arial", bold: true, size: 12, color: { argb: BRAND_DARK } };
+      sheet.getCell(`A${r}`).font = {
+        name: "Arial",
+        bold: true,
+        size: 12,
+        color: { argb: BRAND_DARK },
+      };
       r++;
 
       const summaryRows = [
@@ -207,80 +290,113 @@ export default function Payment() {
         ["Orders Completed", stats.ordersCompleted, null],
         ["Orders Pending", stats.ordersPending, null],
         ["Orders Cancelled", stats.ordersCancelled, null],
-        ["Payments Completed", stats.paymentsCompletedAmount, stats.paymentsCompletedCount],
-        ["Payments Pending", stats.paymentsPendingAmount, stats.paymentsPendingCount],
+        [
+          "Payments Completed",
+          stats.paymentsCompletedAmount,
+          stats.paymentsCompletedCount,
+        ],
+        [
+          "Payments Pending",
+          stats.paymentsPendingAmount,
+          stats.paymentsPendingCount,
+        ],
       ];
 
       summaryRows.forEach(([label, value, count]) => {
         sheet.getCell(`A${r}`).value = label;
-        sheet.getCell(`A${r}`).font = { name: "Arial", bold: true };
-
-        const valueCell = sheet.getCell(`B${r}`);
-        valueCell.value = Number(value) || 0;
-        if (label.startsWith("Payments")) {
-          valueCell.numFmt = '"₹"#,##0.00';
+        sheet.getCell(`A${r}`).font = {
+          name: "Arial",
+          size: 10,
+          color: { argb: GREY },
+        };
+        sheet.getCell(`B${r}`).value = value;
+        sheet.getCell(`B${r}`).font = { name: "Arial", size: 10, bold: true };
+        if (typeof value === "number" && label.includes("Payments")) {
+          sheet.getCell(`B${r}`).numFmt = '"₹"#,##0.00';
         }
-        valueCell.font = { name: "Arial" };
-
-        if (count !== null && count !== undefined) {
-          const countCell = sheet.getCell(`C${r}`);
-          countCell.value = `${count} order${count === 1 ? "" : "s"}`;
-          countCell.font = { name: "Arial", italic: true, color: { argb: GREY } };
+        if (count !== null) {
+          sheet.getCell(`C${r}`).value =
+            `${count} order${count === 1 ? "" : "s"}`;
+          sheet.getCell(`C${r}`).font = {
+            name: "Arial",
+            size: 9,
+            italic: true,
+            color: { argb: GREY },
+          };
         }
         r++;
       });
 
-      r += 1; // blank spacer row
+      r += 1;
 
-      // ---- Orders table ----
-      const headers = ["Order", "Table / Type", "Status", "Grand Total", "Paid", "Balance", "Payment"];
+      // ---- Data table header ----
       const headerRowNum = r;
-      const headerRow = sheet.getRow(headerRowNum);
+      const headers = [
+        "Order",
+        "Order Type",
+        "Table",
+        "Status",
+        "Grand Total",
+        "Paid",
+        "Balance",
+        "Payment",
+      ];
       headers.forEach((h, i) => {
-        const cell = headerRow.getCell(i + 1);
+        const cell = sheet.getRow(headerRowNum).getCell(i + 1);
         cell.value = h;
         cell.font = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BRAND_DARK } };
-        cell.alignment = { horizontal: i >= 3 ? "right" : "left", vertical: "middle" };
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: BRAND_DARK },
+        };
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: i >= 4 && i <= 6 ? "right" : "left",
+        };
       });
-      headerRow.height = 20;
+      sheet.getRow(headerRowNum).height = 20;
       r++;
 
       const dataStartRow = r;
+
       orders.forEach((order) => {
         const paid = orderPaidAmount(order);
         const due = orderBalanceDue(order);
+        const isCancelled = CANCELLED_ORDER_STATUSES.includes(order.status);
         const paymentLabel = paymentLabelFor(order);
+        const paymentColor = isCancelled
+          ? GREY
+          : due <= 0
+            ? GREEN
+            : paid > 0
+              ? AMBER
+              : RED;
 
         const row = sheet.getRow(r);
         row.getCell(1).value = order.orderNumber;
-        row.getCell(2).value = order.table?.name || (order.orderType || "").replace("_", " ");
-        row.getCell(3).value = order.status;
-        row.getCell(4).value = Number(order.grandTotal);
-        row.getCell(5).value = paid;
-        row.getCell(6).value = due;
-        row.getCell(7).value = paymentLabel;
-
-        [4, 5, 6].forEach((c) => {
-          const cell = row.getCell(c);
-          cell.numFmt = '"₹"#,##0.00';
-          cell.alignment = { horizontal: "right" };
-        });
-
-        const paymentColor =
-          paymentLabel === "Paid"
-            ? GREEN
-            : paymentLabel === "Partial"
-            ? AMBER
-            : paymentLabel === "Pending"
-            ? RED
-            : GREY;
-        row.getCell(7).font = { name: "Arial", bold: true, color: { argb: paymentColor } };
-        row.getCell(7).alignment = { horizontal: "right" };
+        row.getCell(2).value =
+          ORDER_TYPE_META[order.orderType]?.label || order.orderType;
+        row.getCell(3).value = order.table?.name || "—";
+        row.getCell(4).value = order.status;
+        row.getCell(5).value = Number(order.grandTotal);
+        row.getCell(5).numFmt = '"₹"#,##0.00';
+        row.getCell(6).value = paid;
+        row.getCell(6).numFmt = '"₹"#,##0.00';
+        row.getCell(7).value = due;
+        row.getCell(7).numFmt = '"₹"#,##0.00';
+        row.getCell(8).value = paymentLabel;
+        row.getCell(8).font = {
+          name: "Arial",
+          bold: true,
+          color: { argb: paymentColor },
+        };
 
         row.eachCell({ includeEmpty: true }, (cell) => {
           if (!cell.font) cell.font = { name: "Arial" };
-          cell.border = { bottom: { style: "thin", color: { argb: BORDER_LIGHT } } };
+          cell.border = {
+            bottom: { style: "thin", color: { argb: BORDER_LIGHT } },
+          };
         });
         r++;
       });
@@ -289,20 +405,24 @@ export default function Payment() {
 
       // ---- Totals row (live SUM formulas, not hardcoded numbers) ----
       const totalsRow = sheet.getRow(r);
-      totalsRow.getCell(3).value = "Totals";
-      totalsRow.getCell(3).font = { name: "Arial", bold: true };
-      totalsRow.getCell(3).alignment = { horizontal: "right" };
+      totalsRow.getCell(4).value = "Totals";
+      totalsRow.getCell(4).font = { name: "Arial", bold: true };
+      totalsRow.getCell(4).alignment = { horizontal: "right" };
 
-      ["D", "E", "F"].forEach((col) => {
+      ["E", "F", "G"].forEach((col) => {
         const cell = totalsRow.getCell(col);
-        cell.value = hasRows ? { formula: `SUM(${col}${dataStartRow}:${col}${dataEndRow})` } : 0;
+        cell.value = hasRows
+          ? { formula: `SUM(${col}${dataStartRow}:${col}${dataEndRow})` }
+          : 0;
         cell.numFmt = '"₹"#,##0.00';
         cell.font = { name: "Arial", bold: true };
         cell.alignment = { horizontal: "right" };
         cell.border = { top: { style: "thin", color: { argb: BRAND_DARK } } };
       });
 
-      sheet.views = [{ state: "frozen", ySplit: headerRowNum, showGridLines: false }];
+      sheet.views = [
+        { state: "frozen", ySplit: headerRowNum, showGridLines: false },
+      ];
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -329,7 +449,9 @@ export default function Payment() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-[#212121]">Payments</h1>
-          <p className="text-sm text-slate-400">Orders and payment totals, date-wise</p>
+          <p className="text-sm text-slate-400">
+            Orders and payment totals, date-wise
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -347,7 +469,9 @@ export default function Payment() {
               type="date"
               value={from}
               max={to}
-              onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+              onChange={(e) =>
+                setRange((r) => ({ ...r, from: e.target.value }))
+              }
               className="bg-transparent text-xs font-medium text-slate-600 outline-none"
             />
             <span className="text-xs text-slate-300">to</span>
@@ -395,7 +519,11 @@ export default function Payment() {
         <SummaryCard
           label="Orders Pending"
           value={loading ? "—" : stats.ordersPending}
-          sub={stats.ordersCancelled > 0 ? `${stats.ordersCancelled} cancelled` : "awaiting completion"}
+          sub={
+            stats.ordersCancelled > 0
+              ? `${stats.ordersCancelled} cancelled`
+              : "awaiting completion"
+          }
           accent="text-amber-600"
         />
         <SummaryCard
@@ -415,47 +543,72 @@ export default function Payment() {
       {/* ============ Orders table ============ */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-5 py-3">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-slate-500">Orders in range</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-slate-500">
+            Orders in range
+          </h2>
         </div>
-        <div className="max-h-[520px] overflow-y-auto">
+        <div className="max-h-[560px] overflow-y-auto">
           {loading ? (
             <p className="p-5 text-sm text-slate-400">Loading orders…</p>
           ) : orders.length === 0 ? (
-            <p className="p-5 text-sm text-slate-400">No orders in this date range.</p>
+            <p className="p-5 text-sm text-slate-400">
+              No orders in this date range.
+            </p>
           ) : (
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
                 <tr>
                   <th className="px-5 py-2">Order</th>
-                  <th className="px-5 py-2">Table / Type</th>
+                  <th className="px-5 py-2">Order Type</th>
+                  <th className="px-5 py-2">Table</th>
                   <th className="px-5 py-2">Status</th>
                   <th className="px-5 py-2 text-right">Grand Total</th>
                   <th className="px-5 py-2 text-right">Paid</th>
                   <th className="px-5 py-2 text-right">Balance</th>
                   <th className="px-5 py-2">Payment</th>
+                  <th className="px-5 py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {orders.map((order) => {
                   const paid = orderPaidAmount(order);
                   const due = orderBalanceDue(order);
-                  const isCancelled = CANCELLED_ORDER_STATUSES.includes(order.status);
+                  const isCancelled = CANCELLED_ORDER_STATUSES.includes(
+                    order.status,
+                  );
                   const paymentLabel = paymentLabelFor(order);
                   const paymentColor = isCancelled
                     ? "text-slate-400"
                     : due <= 0
-                    ? "text-emerald-600"
-                    : paid > 0
-                    ? "text-amber-600"
-                    : "text-[#E53935]";
+                      ? "text-emerald-600"
+                      : paid > 0
+                        ? "text-amber-600"
+                        : "text-[#E53935]";
+                  const typeBadge = ORDER_TYPE_META[order.orderType];
 
                   return (
-                    <tr key={order.id} className="border-b border-slate-100 last:border-0">
+                    <tr
+                      key={order.id}
+                      className="border-b border-slate-100 last:border-0"
+                    >
                       <td className="px-5 py-2.5 font-mono text-xs font-semibold text-slate-600">
                         {order.orderNumber}
                       </td>
+                      <td className="px-5 py-2.5">
+                        {typeBadge ? (
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${typeBadge.className}`}
+                          >
+                            {typeBadge.label}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">
+                            {order.orderType}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-5 py-2.5 text-slate-700">
-                        {order.table?.name || order.orderType?.replace("_", " ")}
+                        {order.table?.name || "—"}
                       </td>
                       <td className="px-5 py-2.5">
                         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
@@ -465,9 +618,57 @@ export default function Payment() {
                       <td className="px-5 py-2.5 text-right font-mono text-slate-700">
                         ₹{Number(order.grandTotal).toFixed(2)}
                       </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-slate-700">₹{paid.toFixed(2)}</td>
-                      <td className="px-5 py-2.5 text-right font-mono text-slate-700">₹{due.toFixed(2)}</td>
-                      <td className={`px-5 py-2.5 text-xs font-semibold ${paymentColor}`}>{paymentLabel}</td>
+                      <td className="px-5 py-2.5 text-right font-mono text-slate-700">
+                        ₹{paid.toFixed(2)}
+                      </td>
+                      <td className="px-5 py-2.5 text-right font-mono text-slate-700">
+                        ₹{due.toFixed(2)}
+                      </td>
+                      <td
+                        className={`px-5 py-2.5 text-xs font-semibold ${paymentColor}`}
+                      >
+                        {paymentLabel}
+                      </td>
+                      <td className="px-5 py-2.5">
+                        {confirmDeleteId === order.id ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="text-xs font-medium text-slate-500 hover:text-slate-700"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => handleDelete(order.id)}
+                              disabled={deletingId === order.id}
+                              className="text-xs font-semibold text-red-600 hover:text-red-700 disabled:opacity-50"
+                            >
+                              {deletingId === order.id
+                                ? "Deleting…"
+                                : "Confirm"}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => setViewingOrderId(order.id)}
+                              title="View order"
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </button>
+                            {isOwner && (
+                              <button
+                                onClick={() => setConfirmDeleteId(order.id)}
+                                title="Delete order"
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -476,6 +677,16 @@ export default function Payment() {
           )}
         </div>
       </div>
+
+      {viewingOrderId && (
+        <OrderDetailModal
+          orderId={viewingOrderId}
+          onClose={() => setViewingOrderId(null)}
+          canDelete={isOwner}
+          onDelete={handleDelete}
+          deleting={deletingId === viewingOrderId}
+        />
+      )}
     </div>
   );
 }
@@ -483,7 +694,9 @@ export default function Payment() {
 function SummaryCard({ label, value, sub, accent }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </p>
       <p className={`mt-1 text-2xl font-bold ${accent}`}>{value}</p>
       <p className="mt-0.5 text-xs text-slate-400">{sub}</p>
     </div>
