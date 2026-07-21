@@ -15,8 +15,9 @@ import {
 import { sendPasswordResetEmail } from "./email.service.js";
 
 const SALT_ROUNDS = 12;
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_FAILED_ATTEMPTS = 15;
+// const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const LOCK_DURATION_MS = 30 * 1000; // 30 seconds
 
 // Employee include shared by every lookup that needs to build a publicUser()
 // — always pulls address along, since the Profile page shows/edits it.
