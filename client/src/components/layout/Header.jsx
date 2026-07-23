@@ -2,11 +2,7 @@
 // src/components/layout/Header.jsx
 // ==============================================
 
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 import { Link, useLocation } from "react-router-dom";
 
@@ -25,6 +21,7 @@ import { useTheme } from "../../context/ThemeContext";
 
 import NotificationBell from "./NotificationBell";
 import ProfileMenu from "./ProfileMenu";
+import OfflineIndicator from "./OfflineIndicator";
 
 const Header = ({ onMenuClick }) => {
   const { user } = useAuth();
@@ -142,18 +139,28 @@ const Header = ({ onMenuClick }) => {
           </button>
 
           <div className="hidden md:block min-w-0">
-            <h1 className="text-2xl font-bold text-[#1F2937] dark:text-white truncate">{pageTitle}</h1>
+            <h1 className="text-2xl font-bold text-[#1F2937] dark:text-white truncate">
+              {pageTitle}
+            </h1>
 
             <div className="flex items-center gap-2 mt-1 text-sm text-[#6B7280] dark:text-[#9CA8A0] overflow-x-auto">
-              <Link to="/dashboard" className="hover:text-[#3FA34D] dark:hover:text-[#43B75A] flex-shrink-0 transition-colors">
+              <Link
+                to="/dashboard"
+                className="hover:text-[#3FA34D] dark:hover:text-[#43B75A] flex-shrink-0 transition-colors"
+              >
                 Home
               </Link>
 
               {breadcrumb.map((item, index) => (
                 <React.Fragment key={index}>
-                  <FiChevronRight size={14} className="flex-shrink-0 text-[#3FA34D] dark:text-[#43B75A]" />
+                  <FiChevronRight
+                    size={14}
+                    className="flex-shrink-0 text-[#3FA34D] dark:text-[#43B75A]"
+                  />
 
-                  <span className="capitalize whitespace-nowrap">{item.replace("-", " ")}</span>
+                  <span className="capitalize whitespace-nowrap">
+                    {item.replace("-", " ")}
+                  </span>
                 </React.Fragment>
               ))}
             </div>
@@ -201,7 +208,9 @@ const Header = ({ onMenuClick }) => {
           <button
             onClick={toggleTheme}
             aria-label="Toggle light / dark theme"
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={
+              theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+            }
             className="w-11 h-11 rounded-full border border-[#E7EAE1] dark:border-[#262B24] bg-[#F3F5EE] dark:bg-[#171C17] flex items-center justify-center hover:border-[#3FA34D]/40 dark:hover:border-[#43B75A]/40 transition-colors"
           >
             {theme === "dark" ? (
@@ -212,6 +221,8 @@ const Header = ({ onMenuClick }) => {
           </button>
 
           {/* Notifications */}
+
+          <OfflineIndicator />
 
           <NotificationBell />
 
@@ -224,18 +235,28 @@ const Header = ({ onMenuClick }) => {
       {/* ================= MOBILE PAGE TITLE ================= */}
 
       <div className="px-6 pb-4 md:hidden">
-        <h1 className="text-xl font-bold text-[#1F2937] dark:text-white truncate">{pageTitle}</h1>
+        <h1 className="text-xl font-bold text-[#1F2937] dark:text-white truncate">
+          {pageTitle}
+        </h1>
 
         <div className="flex items-center gap-2 mt-1 text-sm text-[#6B7280] dark:text-[#9CA8A0] overflow-x-auto">
-          <Link to="/dashboard" className="hover:text-[#3FA34D] dark:hover:text-[#43B75A] flex-shrink-0 transition-colors">
+          <Link
+            to="/dashboard"
+            className="hover:text-[#3FA34D] dark:hover:text-[#43B75A] flex-shrink-0 transition-colors"
+          >
             Home
           </Link>
 
           {breadcrumb.map((item, index) => (
             <React.Fragment key={index}>
-              <FiChevronRight size={14} className="flex-shrink-0 text-[#3FA34D] dark:text-[#43B75A]" />
+              <FiChevronRight
+                size={14}
+                className="flex-shrink-0 text-[#3FA34D] dark:text-[#43B75A]"
+              />
 
-              <span className="capitalize whitespace-nowrap">{item.replace("-", " ")}</span>
+              <span className="capitalize whitespace-nowrap">
+                {item.replace("-", " ")}
+              </span>
             </React.Fragment>
           ))}
         </div>
@@ -261,7 +282,9 @@ const Header = ({ onMenuClick }) => {
         <div className="flex items-center gap-2">
           <FiCalendar className="text-[#3FA34D] dark:text-[#43B75A]" />
 
-          <span className="text-sm text-[#1F2937] dark:text-white">{formattedDate}</span>
+          <span className="text-sm text-[#1F2937] dark:text-white">
+            {formattedDate}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">

@@ -58,22 +58,39 @@ export const AuthProvider = ({ children }) => {
   // Tries the httpOnly refresh cookie (if present) to get a fresh access
   // token, then fetches /auth/me. If either step fails, the user is simply
   // treated as logged out — no error thrown to the UI.
+  //
+  // FIX: this had no try/catch. authService.restoreSession() calling
+  // fetch() while offline throws a TypeError ("Failed to fetch") — with
+  // no catch here, that exception propagated out of this effect entirely
+  // and setLoading(false) below was NEVER reached. Since the provider
+  // renders `{!loading && children}`, that meant `loading` stayed true
+  // forever and the ENTIRE APP rendered nothing, permanently, on any
+  // network failure during boot — exactly what a hard reload while
+  // offline triggers. authService.restoreSession() itself now also
+  // handles the offline case gracefully (falls back to decoding the
+  // locally-stored token), but this try/finally stays regardless as a
+  // hard guarantee: no failure inside restoreSession, now or in the
+  // future, can ever leave the app stuck showing nothing.
   // ==========================================
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const restoredUser = await authService.restoreSession();
+      try {
+        const restoredUser = await authService.restoreSession();
 
-      if (cancelled) return;
+        if (cancelled) return;
 
-      if (restoredUser) {
-        setUser(restoredUser);
-        setIsAuthenticated(true);
+        if (restoredUser) {
+          setUser(restoredUser);
+          setIsAuthenticated(true);
+        }
+      } catch (err) {
+        console.error("Session restore failed:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      setLoading(false);
     })();
 
     return () => {

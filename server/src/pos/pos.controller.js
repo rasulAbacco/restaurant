@@ -128,7 +128,7 @@ export async function addItems(req, res) {
 // and its payments/invoice, used by the Payments page's Delete action.
 export async function deleteOrder(req, res) {
   try {
-    const result = await posService.deleteOrder(req.params.id);
+    const result = await posService.deleteOrder(req.params.id, req.user);
     res.json(result);
   } catch (err) {
     res

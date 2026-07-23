@@ -6,8 +6,15 @@
 // of replacing the billing panel or taking over the whole page.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { WifiOff } from "lucide-react";
 import InvoiceView from "./InvoiceView";
-import { getOrders, getBillingSummary, completeBilling, sendToKitchen } from "../pos/api/posApi";
+import { getOrders, getBillingSummary, sendToKitchen } from "../pos/api/posApi";
+import { fetchWithOfflineFallback } from "../offline/offlineCache";
+import {
+  completeBillingOffline,
+  getPendingBillingOrderIds,
+  subscribeToBillingQueue,
+} from "../offline/billingQueue";
 
 const PAYMENT_METHODS = [
   { key: "CASH", label: "Cash" },
@@ -15,7 +22,15 @@ const PAYMENT_METHODS = [
   { key: "UPI", label: "UPI" },
 ];
 
-const ACTIVE_STATUSES = ["NEW", "ACCEPTED", "PREPARING", "READY", "SERVED", "OUT_FOR_DELIVERY", "ON_HOLD"];
+const ACTIVE_STATUSES = [
+  "NEW",
+  "ACCEPTED",
+  "PREPARING",
+  "READY",
+  "SERVED",
+  "OUT_FOR_DELIVERY",
+  "ON_HOLD",
+];
 
 function makeSplitLineId() {
   return `split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -36,7 +51,9 @@ export default function Billings() {
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersError, setOrdersError] = useState(null);
 
-  const [selectedOrderId, setSelectedOrderId] = useState(preselectedOrderId || null);
+  const [selectedOrderId, setSelectedOrderId] = useState(
+    preselectedOrderId || null,
+  );
 
   const [summary, setSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -62,21 +79,39 @@ export default function Billings() {
   const [sentToKitchen, setSentToKitchen] = useState(false);
   const [kitchenError, setKitchenError] = useState(null);
 
+  const [isOffline, setIsOffline] = useState(false);
+  // orderIds with a cash billing queued but not yet synced.
+  const [pendingBillingOrderIds, setPendingBillingOrderIds] = useState(
+    new Set(),
+  );
+
   const loadOrders = useCallback(() => {
     setOrdersLoading(true);
     setOrdersError(null);
-    getOrders({ limit: 100 })
-      .then((data) => {
-        const list = (data?.data || []).filter((o) => ACTIVE_STATUSES.includes(o.status));
-        setOrders(list);
+    fetchWithOfflineFallback("billing:activeOrders", async () => {
+      const data = await getOrders({ limit: 100 });
+      return (data?.data || []).filter((o) =>
+        ACTIVE_STATUSES.includes(o.status),
+      );
+    })
+      .then(({ data, fromCache }) => {
+        setOrders(data);
+        setIsOffline(fromCache);
       })
       .catch((err) => setOrdersError(err.message))
       .finally(() => setOrdersLoading(false));
   }, []);
 
+  const refreshPendingBillingIds = useCallback(async () => {
+    setPendingBillingOrderIds(await getPendingBillingOrderIds());
+  }, []);
+
   useEffect(() => {
     loadOrders();
-  }, [loadOrders]);
+    refreshPendingBillingIds();
+    const unsubscribe = subscribeToBillingQueue(refreshPendingBillingIds);
+    return unsubscribe;
+  }, [loadOrders, refreshPendingBillingIds]);
 
   const loadSummary = useCallback((orderId) => {
     if (!orderId) return;
@@ -97,7 +132,11 @@ export default function Billings() {
         }
         setSummary(data);
         setSplitLines([
-          { id: makeSplitLineId(), method: "CASH", amount: data.balanceDue || data.grandTotal },
+          {
+            id: makeSplitLineId(),
+            method: "CASH",
+            amount: data.balanceDue || data.grandTotal,
+          },
         ]);
       })
       .catch((err) => setSummaryError(err.message))
@@ -114,15 +153,22 @@ export default function Billings() {
   }
 
   function updateSplitLine(id, patch) {
-    setSplitLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+    setSplitLines((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+    );
   }
 
   function addSplitLine() {
-    setSplitLines((prev) => [...prev, { id: makeSplitLineId(), method: "CASH", amount: "" }]);
+    setSplitLines((prev) => [
+      ...prev,
+      { id: makeSplitLineId(), method: "CASH", amount: "" },
+    ]);
   }
 
   function removeSplitLine(id) {
-    setSplitLines((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev));
+    setSplitLines((prev) =>
+      prev.length > 1 ? prev.filter((l) => l.id !== id) : prev,
+    );
   }
 
   // Live preview of the discount being keyed in — not persisted until
@@ -134,7 +180,10 @@ export default function Billings() {
     const raw = Number(discountValue);
     if (!raw || raw <= 0) return 0;
 
-    const amount = discountType === "PERCENTAGE" ? (summary.subtotal * Math.min(raw, 100)) / 100 : raw;
+    const amount =
+      discountType === "PERCENTAGE"
+        ? (summary.subtotal * Math.min(raw, 100)) / 100
+        : raw;
 
     // Never let a discount wipe out the balance entirely — the backend
     // requires at least one payment line with a positive amount, so at
@@ -143,11 +192,20 @@ export default function Billings() {
     return Math.min(Math.max(amount, 0), cap);
   }, [summary, discountType, discountValue]);
 
-  const previewGrandTotal = summary ? Math.max(summary.grandTotal - pendingDiscountAmount, 0) : 0;
-  const previewBalanceDue = summary ? Math.max(summary.balanceDue - pendingDiscountAmount, 0) : 0;
+  const previewGrandTotal = summary
+    ? Math.max(summary.grandTotal - pendingDiscountAmount, 0)
+    : 0;
+  const previewBalanceDue = summary
+    ? Math.max(summary.balanceDue - pendingDiscountAmount, 0)
+    : 0;
 
-  const splitTotal = splitLines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
-  const splitMismatch = summary ? Math.abs(splitTotal - previewBalanceDue) > 0.01 : true;
+  const splitTotal = splitLines.reduce(
+    (sum, l) => sum + (Number(l.amount) || 0),
+    0,
+  );
+  const splitMismatch = summary
+    ? Math.abs(splitTotal - previewBalanceDue) > 0.01
+    : true;
 
   async function handleCompletePayment() {
     if (!summary) return;
@@ -165,26 +223,44 @@ export default function Billings() {
     // discount application entirely when this is omitted.
     const discount =
       pendingDiscountAmount > 0
-        ? { type: discountType, amount: pendingDiscountAmount, reason: discountReason || undefined }
+        ? {
+            type: discountType,
+            amount: pendingDiscountAmount,
+            reason: discountReason || undefined,
+          }
         : undefined;
 
     // Capture this before the order drops off the active list on reload.
     const isTakeaway = selectedOrder?.orderType === "TAKEAWAY";
 
+    // Offline billing is CASH-only (see billingQueue.js) — card, UPI, and
+    // split payments always require a live connection, online or off.
+    const isCashOnly = mode === "CASH";
+
     try {
-      const data = await completeBilling(selectedOrderId, { payments, discount });
+      const data = await completeBillingOffline(
+        selectedOrderId,
+        { payments, discount },
+        { cashOnly: isCashOnly },
+      );
 
       // Takeaway → Billing → Payment Completed → Send to Kitchen → Invoice.
       // Dine-in orders were already fired to the kitchen at placement, so
       // only takeaway needs this step, and only now that payment cleared.
-      if (isTakeaway) {
+      // Skipped entirely for a queued-offline billing — there's no
+      // connection to send the kitchen ticket over yet either; it'll go
+      // out once this order's billing actually syncs.
+      if (isTakeaway && !data.queuedOffline) {
         // Careful: data.order is a lean object (just enough to refresh the
         // active-orders list) — it does NOT reliably carry the item array.
         // The full item records with real ids live on data.invoice.order,
         // the same place InvoiceView reads them from below.
-        const orderItemIds = (data.invoice?.order?.items || data.order?.items || summary?.items || []).map(
-          (i) => i.id
-        );
+        const orderItemIds = (
+          data.invoice?.order?.items ||
+          data.order?.items ||
+          summary?.items ||
+          []
+        ).map((i) => i.id);
         if (orderItemIds.length) {
           try {
             await sendToKitchen(selectedOrderId, orderItemIds);
@@ -196,12 +272,18 @@ export default function Billings() {
           }
         } else {
           // No items found anywhere — don't silently claim success.
-          setKitchenError("Could not find the order's items to send to the kitchen.");
+          setKitchenError(
+            "Could not find the order's items to send to the kitchen.",
+          );
         }
       }
 
       setResult(data);
-      loadOrders(); // the just-billed order drops off the active list
+      if (!data.queuedOffline) {
+        loadOrders(); // the just-billed order drops off the active list
+      } else {
+        refreshPendingBillingIds();
+      }
     } catch (err) {
       setPayError(err.message);
     } finally {
@@ -222,7 +304,7 @@ export default function Billings() {
 
   const selectedOrder = useMemo(
     () => orders.find((o) => o.id === selectedOrderId) || null,
-    [orders, selectedOrderId]
+    [orders, selectedOrderId],
   );
 
   return (
@@ -230,7 +312,15 @@ export default function Billings() {
       {/* ============ Active Orders (left) ============ */}
       <div className="flex w-72 min-h-[500px] shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div className="shrink-0 border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-[#1C3044]">Active Orders</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-[#1C3044]">
+            Active Orders
+          </h2>
+          {isOffline && (
+            <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-700">
+              <WifiOff className="h-3.5 w-3.5" />
+              Offline — cash-only billing, invoice pending sync
+            </div>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {ordersLoading ? (
@@ -238,7 +328,9 @@ export default function Billings() {
           ) : ordersError ? (
             <p className="p-4 text-sm text-red-600">{ordersError}</p>
           ) : orders.length === 0 ? (
-            <p className="p-4 text-sm text-slate-400">No orders awaiting billing.</p>
+            <p className="p-4 text-sm text-slate-400">
+              No orders awaiting billing.
+            </p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {orders.map((order) => {
@@ -248,19 +340,29 @@ export default function Billings() {
                     <button
                       onClick={() => selectOrder(order.id)}
                       className={`flex w-full flex-col items-start gap-0.5 px-4 py-3 text-left transition-colors ${
-                        selectedOrderId === order.id ? "bg-blue-50" : "hover:bg-slate-50"
+                        selectedOrderId === order.id
+                          ? "bg-blue-50"
+                          : "hover:bg-slate-50"
                       }`}
                     >
                       <span className="font-mono text-xs font-semibold text-slate-500">
                         {order.orderNumber}
                       </span>
                       <span className="font-semibold text-slate-800">
-                        {order.table?.name || order.orderType?.replace("_", " ")}
+                        {order.table?.name ||
+                          order.orderType?.replace("_", " ")}
                       </span>
                       <span className="flex w-full items-center justify-between text-xs text-slate-400">
                         <span>{order.status}</span>
-                        <span className="font-mono font-semibold text-slate-600">₹{due.toFixed(2)}</span>
+                        <span className="font-mono font-semibold text-slate-600">
+                          ₹{due.toFixed(2)}
+                        </span>
                       </span>
+                      {pendingBillingOrderIds.has(order.id) && (
+                        <span className="mt-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                          Sync pending
+                        </span>
+                      )}
                     </button>
                   </li>
                 );
@@ -277,19 +379,28 @@ export default function Billings() {
             Select an order from the list to view its bill.
           </div>
         ) : summaryLoading ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-slate-400">Loading bill…</div>
+          <div className="flex flex-1 items-center justify-center text-sm text-slate-400">
+            Loading bill…
+          </div>
         ) : summaryError && !summary ? (
           <div className="p-5 text-sm text-red-600">{summaryError}</div>
         ) : summary ? (
           <>
             <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-6 py-4">
-              <h2 className="text-lg font-bold text-[#1C3044]">Billing &amp; Payment</h2>
+              <h2 className="text-lg font-bold text-[#1C3044]">
+                Billing &amp; Payment
+              </h2>
               <button
                 onClick={() => selectOrder(null)}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
               >
                 <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
-                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path
+                    d="M6 6l12 12M18 6L6 18"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  />
                 </svg>
               </button>
             </div>
@@ -299,20 +410,30 @@ export default function Billings() {
               <div className="mb-4 grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
                 <div>
                   <p className="text-xs text-slate-400">Table</p>
-                  <p className="font-semibold text-slate-800">{summary.table?.name || "—"}</p>
+                  <p className="font-semibold text-slate-800">
+                    {summary.table?.name || "—"}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs text-slate-400">Customer</p>
-                  <p className="font-semibold text-slate-800">{summary.customer?.name || "Walk-in"}</p>
+                  <p className="font-semibold text-slate-800">
+                    {summary.customer?.name || "Walk-in"}
+                  </p>
                 </div>
               </div>
 
               <ul className="mb-4 space-y-2">
                 {summary.items.map((item) => (
-                  <li key={item.id} className="flex items-start justify-between border-b border-slate-100 pb-2 text-sm">
+                  <li
+                    key={item.id}
+                    className="flex items-start justify-between border-b border-slate-100 pb-2 text-sm"
+                  >
                     <div>
                       <p className="font-medium text-slate-800">
-                        {item.name} <span className="text-slate-400">× {item.quantity}</span>
+                        {item.name}{" "}
+                        <span className="text-slate-400">
+                          × {item.quantity}
+                        </span>
                       </p>
                       {item.addOns.map((a, idx) => (
                         <p key={idx} className="text-xs text-slate-400">
@@ -321,7 +442,11 @@ export default function Billings() {
                       ))}
                     </div>
                     <span className="font-mono font-semibold text-slate-800">
-                      ₹{(item.totalPrice + item.addOns.reduce((s, a) => s + a.totalPrice, 0)).toFixed(2)}
+                      ₹
+                      {(
+                        item.totalPrice +
+                        item.addOns.reduce((s, a) => s + a.totalPrice, 0)
+                      ).toFixed(2)}
                     </span>
                   </li>
                 ))}
@@ -330,7 +455,9 @@ export default function Billings() {
               {!result && (
                 <div className="mb-4 rounded-xl border border-slate-200 p-3">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Discount</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Discount
+                    </p>
                     {discountType && (
                       <button
                         onClick={() => {
@@ -346,7 +473,11 @@ export default function Billings() {
                   </div>
                   <div className="mt-2 flex gap-2">
                     <button
-                      onClick={() => setDiscountType(discountType === "PERCENTAGE" ? null : "PERCENTAGE")}
+                      onClick={() =>
+                        setDiscountType(
+                          discountType === "PERCENTAGE" ? null : "PERCENTAGE",
+                        )
+                      }
                       className={`flex-1 rounded-lg border py-1.5 text-sm font-semibold transition-colors ${
                         discountType === "PERCENTAGE"
                           ? "border-blue-600 bg-blue-600 text-white"
@@ -356,7 +487,13 @@ export default function Billings() {
                       Percentage
                     </button>
                     <button
-                      onClick={() => setDiscountType(discountType === "FIXED_AMOUNT" ? null : "FIXED_AMOUNT")}
+                      onClick={() =>
+                        setDiscountType(
+                          discountType === "FIXED_AMOUNT"
+                            ? null
+                            : "FIXED_AMOUNT",
+                        )
+                      }
                       className={`flex-1 rounded-lg border py-1.5 text-sm font-semibold transition-colors ${
                         discountType === "FIXED_AMOUNT"
                           ? "border-blue-600 bg-blue-600 text-white"
@@ -379,7 +516,11 @@ export default function Billings() {
                           max={discountType === "PERCENTAGE" ? 100 : undefined}
                           value={discountValue}
                           onChange={(e) => setDiscountValue(e.target.value)}
-                          placeholder={discountType === "PERCENTAGE" ? "e.g. 10" : "e.g. 50"}
+                          placeholder={
+                            discountType === "PERCENTAGE"
+                              ? "e.g. 10"
+                              : "e.g. 50"
+                          }
                           className="w-full rounded-lg border border-slate-200 py-1.5 pl-7 pr-3 text-sm outline-none focus:border-blue-400"
                         />
                       </div>
@@ -427,7 +568,12 @@ export default function Billings() {
                 )}
                 <div className="flex justify-between border-t border-slate-200 pt-1.5 text-base font-bold text-slate-900">
                   <span>Grand Total</span>
-                  <span>₹{(result ? summary.grandTotal : previewGrandTotal).toFixed(2)}</span>
+                  <span>
+                    ₹
+                    {(result ? summary.grandTotal : previewGrandTotal).toFixed(
+                      2,
+                    )}
+                  </span>
                 </div>
                 {summary.totalPaid > 0 && (
                   <div className="flex justify-between text-xs text-slate-400">
@@ -474,7 +620,11 @@ export default function Billings() {
                         <div key={line.id} className="flex items-center gap-2">
                           <select
                             value={line.method}
-                            onChange={(e) => updateSplitLine(line.id, { method: e.target.value })}
+                            onChange={(e) =>
+                              updateSplitLine(line.id, {
+                                method: e.target.value,
+                              })
+                            }
                             className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-blue-400"
                           >
                             {PAYMENT_METHODS.map((m) => (
@@ -488,7 +638,11 @@ export default function Billings() {
                             min="0"
                             step="0.01"
                             value={line.amount}
-                            onChange={(e) => updateSplitLine(line.id, { amount: e.target.value })}
+                            onChange={(e) =>
+                              updateSplitLine(line.id, {
+                                amount: e.target.value,
+                              })
+                            }
                             placeholder="Amount"
                             className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-blue-400"
                           />
@@ -507,8 +661,11 @@ export default function Billings() {
                       >
                         + Add another payment
                       </button>
-                      <p className={`text-xs font-medium ${splitMismatch ? "text-red-500" : "text-emerald-600"}`}>
-                        Split total: ₹{splitTotal.toFixed(2)} of ₹{previewBalanceDue.toFixed(2)} due
+                      <p
+                        className={`text-xs font-medium ${splitMismatch ? "text-red-500" : "text-emerald-600"}`}
+                      >
+                        Split total: ₹{splitTotal.toFixed(2)} of ₹
+                        {previewBalanceDue.toFixed(2)} due
                       </p>
                     </div>
                   )}
@@ -516,16 +673,25 @@ export default function Billings() {
               )}
 
               {result && (
-                <div className="mt-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-                  {sentToKitchen
-                    ? "Payment received — order sent to kitchen. Invoice generated on the right."
-                    : "Payment received — invoice generated on the right."}
+                <div
+                  className={`mt-5 rounded-lg px-4 py-3 text-sm font-semibold ${
+                    result.queuedOffline
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-emerald-50 text-emerald-700"
+                  }`}
+                >
+                  {result.queuedOffline
+                    ? "Cash payment saved on this device — no connection right now. The invoice will generate automatically once back online."
+                    : sentToKitchen
+                      ? "Payment received — order sent to kitchen. Invoice generated on the right."
+                      : "Payment received — invoice generated on the right."}
                 </div>
               )}
 
               {kitchenError && (
                 <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
-                  Payment succeeded, but sending the order to the kitchen failed: {kitchenError}
+                  Payment succeeded, but sending the order to the kitchen
+                  failed: {kitchenError}
                 </p>
               )}
 
@@ -544,7 +710,9 @@ export default function Billings() {
                   disabled={processing || (mode === "SPLIT" && splitMismatch)}
                   className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
-                  {processing ? "Processing payment…" : `Complete Payment · ₹${previewBalanceDue.toFixed(2)}`}
+                  {processing
+                    ? "Processing payment…"
+                    : `Complete Payment · ₹${previewBalanceDue.toFixed(2)}`}
                 </button>
               </div>
             )}
@@ -555,8 +723,31 @@ export default function Billings() {
       {/* ============ Invoice (right) — only appears once paid ============ */}
       {selectedOrderId && (summary || result) && (
         <div className="flex flex-1 min-h-[500px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          {result ? (
-            <InvoiceView invoice={result.invoice} summary={summary} payments={result.payments} onDone={handleDone} />
+          {result && result.invoice ? (
+            <InvoiceView
+              invoice={result.invoice}
+              summary={summary}
+              payments={result.payments}
+              onDone={handleDone}
+            />
+          ) : result && result.queuedOffline ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+              <WifiOff className="h-8 w-8 text-amber-500" />
+              <p className="text-sm font-semibold text-slate-700">
+                Invoice pending sync
+              </p>
+              <p className="text-sm text-slate-400">
+                This order's payment is saved on this device. The printable
+                invoice will be generated automatically — with a proper
+                sequential invoice number — once the connection is back.
+              </p>
+              <button
+                onClick={handleDone}
+                className="mt-2 rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-200"
+              >
+                Back to Orders
+              </button>
+            </div>
           ) : (
             <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-slate-400">
               Invoice will appear here once payment is completed.

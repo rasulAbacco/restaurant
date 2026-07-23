@@ -1162,6 +1162,17 @@ model Order {
   status      OrderStatus @default(NEW)
   holdNumber  String?     @unique
 
+  // FEATURE: offline mode, phase 1 step 6 (idempotency). Generated
+  // client-side (crypto.randomUUID()) the moment an order is created
+  // OFFLINE, before it's ever synced to the server — see
+  // client/src/offline/offlineQueue.js. On sync, pos.service.js's
+  // createOrder checks for an existing row with this id FIRST and returns
+  // it instead of inserting again, so a sync that's retried after a
+  // dropped response (order actually saved, but the client never got the
+  // 200) can never create a duplicate order. Null for orders created
+  // normally (online, no offline queue involved).
+  clientRequestId String? @unique
+
   tableId String?
   table   RestaurantTable? @relation(fields: [tableId], references: [id])
 
@@ -1525,4 +1536,29 @@ model PriceHistory {
   changedAt  DateTime @default(now())
 
   @@map("price_history")
+}
+
+// General-purpose audit trail for sensitive actions that don't already
+// have a dedicated model (price changes already have PriceHistory above).
+// Used for: order deletion, login-account/role creation, and employee
+// termination — see server/src/lib/auditLog.service.js for the write
+// helper and which call sites use it. Deliberately NOT tied by a foreign
+// key to Employee/Order/etc. — an audit log needs to survive even if the
+// thing it describes (e.g. a deleted Order) no longer exists.
+model AuditLog {
+  id         String @id @default(uuid())
+  action     String // e.g. "ORDER_DELETED", "LOGIN_ACCOUNT_CREATED", "EMPLOYEE_TERMINATED"
+  entityType String // e.g. "Order", "Employee", "UserAccount"
+  entityId   String
+
+  performedById   String? // Employee.id of whoever did it — nullable for system-initiated actions
+  performedByRole String? // role snapshot at the time, since a role can change later
+
+  metadata  Json? // free-form details specific to the action (orderNumber, grandTotal, assigned role, etc.)
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([performedById])
+  @@map("audit_logs")
 }

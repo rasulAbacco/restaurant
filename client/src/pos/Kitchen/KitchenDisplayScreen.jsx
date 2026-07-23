@@ -1,8 +1,15 @@
 //client\src\pos\Kitchen\KitchenDisplayScreen.jsx
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { WifiOff } from "lucide-react";
 import KotCard from "./Kotcard";
-import { getKitchenDisplay, updateKotStatus, addKitchenNote } from "../api/posApi";
+import { getKitchenDisplay, addKitchenNote } from "../api/posApi";
 import { useAuth } from "../../auth/AuthContext";
+import { fetchWithOfflineFallback } from "../../offline/offlineCache";
+import {
+  updateKotStatusOffline,
+  getPendingKotIds,
+  subscribeToKdsQueue,
+} from "../../offline/kdsQueue";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -25,11 +32,20 @@ export default function KitchenDisplayScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatingId, setUpdatingId] = useState(null);
+  const [isOffline, setIsOffline] = useState(false);
+  // kotIds with a status update queued but not yet synced — shown as a
+  // small badge on the affected card so kitchen staff can tell "I tapped
+  // this, it just hasn't reached the server yet" from "nothing happened."
+  const [pendingKotIds, setPendingKotIds] = useState(new Set());
 
   const load = useCallback(async () => {
     try {
-      const data = await getKitchenDisplay();
+      const { data, fromCache } = await fetchWithOfflineFallback(
+        "kds:display",
+        getKitchenDisplay,
+      );
       setKots(data);
+      setIsOffline(fromCache);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -38,18 +54,31 @@ export default function KitchenDisplayScreen() {
     }
   }, []);
 
+  const refreshPendingIds = useCallback(async () => {
+    setPendingKotIds(await getPendingKotIds());
+  }, []);
+
   useEffect(() => {
     load();
+    refreshPendingIds();
     const id = setInterval(load, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [load]);
+    // Re-check which tickets have a queued update whenever the KDS queue
+    // changes (a tap queues one, a sync clears one) — independent of the
+    // 8s poll, so the badge disappears the moment a sync actually succeeds.
+    const unsubscribe = subscribeToKdsQueue(refreshPendingIds);
+    return () => {
+      clearInterval(id);
+      unsubscribe();
+    };
+  }, [load, refreshPendingIds]);
 
   // Sections are derived from whatever's actually on the board right now —
   // no separate kitchen-sections endpoint needed for this screen.
   const sections = useMemo(() => {
     const map = new Map();
     for (const kot of kots) {
-      if (kot.kitchenSection) map.set(kot.kitchenSection.id, kot.kitchenSection.name);
+      if (kot.kitchenSection)
+        map.set(kot.kitchenSection.id, kot.kitchenSection.name);
     }
     return Array.from(map, ([id, name]) => ({ id, name }));
   }, [kots]);
@@ -63,15 +92,18 @@ export default function KitchenDisplayScreen() {
     return filtered.slice().sort((a, b) => {
       // Pending -> Ready -> Served
       const rankDiff =
-        (DISPLAY_RANK[a.status] ?? 0) -
-        (DISPLAY_RANK[b.status] ?? 0);
+        (DISPLAY_RANK[a.status] ?? 0) - (DISPLAY_RANK[b.status] ?? 0);
 
       if (rankDiff !== 0) return rankDiff;
 
       // SERVED: newest completed first
       if (a.status === "SERVED" && b.status === "SERVED") {
-        const aTime = new Date(a.completedAt || a.servedAt || a.updatedAt || a.createdAt).getTime();
-        const bTime = new Date(b.completedAt || b.servedAt || b.updatedAt || b.createdAt).getTime();
+        const aTime = new Date(
+          a.completedAt || a.servedAt || a.updatedAt || a.createdAt,
+        ).getTime();
+        const bTime = new Date(
+          b.completedAt || b.servedAt || b.updatedAt || b.createdAt,
+        ).getTime();
 
         return bTime - aTime;
       }
@@ -84,8 +116,12 @@ export default function KitchenDisplayScreen() {
   async function handleAdvance(id, nextStatus) {
     setUpdatingId(id);
     try {
-      await updateKotStatus(id, nextStatus);
+      // updateKotStatusOffline tries the network first, and only falls
+      // back to the local queue (+ an optimistic cache patch) on a
+      // genuine connectivity failure — see kdsQueue.js.
+      await updateKotStatusOffline(id, nextStatus);
       await load();
+      await refreshPendingIds();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -107,20 +143,42 @@ export default function KitchenDisplayScreen() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50">
-              <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5 text-blue-600">
-                <rect x="3" y="4" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                className="h-5 w-5 text-blue-600"
+              >
+                <rect
+                  x="3"
+                  y="4"
+                  width="18"
+                  height="14"
+                  rx="2"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                />
                 <path d="M3 9h18" stroke="currentColor" strokeWidth="1.8" />
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900">Kitchen Display</h1>
+              <h1 className="text-lg font-bold text-slate-900">
+                Kitchen Display
+              </h1>
               <p className="text-xs text-slate-400">
-                {visibleKots.length} active ticket{visibleKots.length === 1 ? "" : "s"}
+                {visibleKots.length} active ticket
+                {visibleKots.length === 1 ? "" : "s"}
               </p>
             </div>
           </div>
           {error && <p className="text-sm font-medium text-red-600">{error}</p>}
         </div>
+        {isOffline && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            <WifiOff className="h-3.5 w-3.5" />
+            Offline — showing last-synced tickets. Status updates will sync
+            automatically once back online.
+          </div>
+        )}
       </header>
 
       {sections.length > 0 && (
@@ -128,7 +186,9 @@ export default function KitchenDisplayScreen() {
           <button
             onClick={() => setActiveSectionId("ALL")}
             className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-              activeSectionId === "ALL" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              activeSectionId === "ALL"
+                ? "bg-blue-600 text-white"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
             }`}
           >
             All Stations
@@ -138,7 +198,9 @@ export default function KitchenDisplayScreen() {
               key={s.id}
               onClick={() => setActiveSectionId(s.id)}
               className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-                activeSectionId === s.id ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                activeSectionId === s.id
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
               }`}
             >
               {s.name}
@@ -163,6 +225,7 @@ export default function KitchenDisplayScreen() {
                 onAdvance={handleAdvance}
                 onAddNote={canAddNotes ? handleAddNote : undefined}
                 updating={updatingId === kot.id}
+                pendingSync={pendingKotIds.has(kot.id)}
               />
             ))}
           </div>

@@ -1,6 +1,7 @@
 // server/src/pos/pos.service.js
 import prisma from "../config/prisma.js";
 import * as kotService from "./kot/kot.service.js";
+import { writeAuditLog } from "../lib/auditLog.service.js";
 
 /**
  * Generates the next sequential order number, e.g. ORD-000123.
@@ -136,10 +137,24 @@ export async function createOrder(payload, client = prisma) {
     serviceChargeAmount = 0,
     notes,
     store,
+    clientRequestId,
   } = payload;
 
   if (!items || items.length === 0)
     throw new Error("Order must have at least one item");
+
+  // FEATURE: offline mode idempotency (phase 1, step 6). If this exact
+  // clientRequestId already produced an order — e.g. the offline queue's
+  // sync succeeded once already but the client never saw the response and
+  // is retrying — return that SAME order instead of creating a second
+  // one. This must be checked before any pricing/creation work below.
+  if (clientRequestId) {
+    const existing = await client.order.findUnique({
+      where: { clientRequestId },
+      include: { items: { include: { addOns: true } } },
+    });
+    if (existing) return existing;
+  }
 
   const { itemsData, subtotal, gstAmount } = await computeItemPricing(
     items,
@@ -157,47 +172,69 @@ export async function createOrder(payload, client = prisma) {
 
   const orderNumber = await generateOrderNumber(client);
 
-  const order = await client.order.create({
-    data: {
-      orderNumber,
-      orderType,
-      status: "NEW",
-      tableId,
-      customerId,
-      waiterId,
-      numberOfGuests,
-      deliveryPartnerId,
-      deliveryCharge,
-      deliveryAddress,
-      estimatedDeliveryTime,
-      pickupTime,
-      packagingCharge,
-      subtotal,
-      gstAmount,
-      serviceChargeAmount,
-      grandTotal,
-      notes,
-      store,
-      items: {
-        create: itemsData.map((item) => ({
-          menuItemId: item.menuItemId,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          totalPrice: item.totalPrice,
-          notes: item.notes,
-          addOns: {
-            create: item.addOns.map((a) => ({
-              addOnId: a.addOnId,
-              quantity: a.quantity,
-              unitPrice: a.unitPrice,
-              totalPrice: a.totalPrice,
-            })),
-          },
-        })),
+  let order;
+  try {
+    order = await client.order.create({
+      data: {
+        orderNumber,
+        orderType,
+        status: "NEW",
+        tableId,
+        customerId,
+        waiterId,
+        numberOfGuests,
+        deliveryPartnerId,
+        deliveryCharge,
+        deliveryAddress,
+        estimatedDeliveryTime,
+        pickupTime,
+        packagingCharge,
+        subtotal,
+        gstAmount,
+        serviceChargeAmount,
+        grandTotal,
+        notes,
+        store,
+        clientRequestId,
+        items: {
+          create: itemsData.map((item) => ({
+            menuItemId: item.menuItemId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+            notes: item.notes,
+            addOns: {
+              create: item.addOns.map((a) => ({
+                addOnId: a.addOnId,
+                quantity: a.quantity,
+                unitPrice: a.unitPrice,
+                totalPrice: a.totalPrice,
+              })),
+            },
+          })),
+        },
       },
-    },
-    include: { items: { include: { addOns: true } } },
-  });
+      include: { items: { include: { addOns: true } } },
+    });
+  } catch (err) {
+    // Extremely narrow race: two near-simultaneous sync attempts for the
+    // SAME clientRequestId both pass the findUnique check above before
+    // either has inserted. The @unique constraint on clientRequestId
+    // catches it at the DB level — fetch and return the winner's row
+    // instead of surfacing a confusing constraint-violation error.
+    if (
+      err.code === "P2002" &&
+      err.meta?.target?.includes("clientRequestId") &&
+      clientRequestId
+    ) {
+      const winner = await client.order.findUnique({
+        where: { clientRequestId },
+        include: { items: { include: { addOns: true } } },
+      });
+      if (winner) return winner;
+    }
+    throw err;
+  }
 
   // Dine-in orders occupy the table immediately
   if (orderType === "DINE_IN" && tableId) {
@@ -220,6 +257,24 @@ export async function createOrderAndSendToKitchen(payload) {
   return prisma
     .$transaction(
       async (tx) => {
+        // FEATURE: offline-sync idempotency guard. If this
+        // clientRequestId already produced an order, it was also already
+        // sent to the kitchen the first time — return it as-is rather
+        // than calling createOrder+sendToKitchen again. This MUST be
+        // checked here (not just inside createOrder) because
+        // kot.service.js's sendToKitchen deliberately THROWS on items
+        // that are already ticketed (that's its own duplicate-KOT guard
+        // for double-clicks) — without this early return, a harmless
+        // retried sync would surface as a hard failure instead of a
+        // silent no-op.
+        if (payload.clientRequestId) {
+          const existing = await tx.order.findUnique({
+            where: { clientRequestId: payload.clientRequestId },
+            select: { id: true },
+          });
+          if (existing) return existing.id;
+        }
+
         const order = await createOrder(payload, tx);
 
         const orderItemIds = order.items.map((i) => i.id);
@@ -304,6 +359,17 @@ export async function getOrderById(id) {
 export async function updateOrderStatus(id, status) {
   const order = await prisma.order.findUnique({ where: { id } });
   if (!order) throw new Error("Order not found");
+
+  // FIX: idempotent replay guard — same reasoning as kot.service.js's
+  // KOT_STAGE_RANK guard. Without this, ANY retried request for the same
+  // status (an offline-queued "mark COMPLETED" replaying after it already
+  // succeeded once, or even a plain network retry with no offline
+  // involved at all) would re-run consumeStockForOrder below and
+  // DOUBLE-DEDUCT inventory for the same order — and would also throw
+  // unnecessarily, since STATUS_FLOW's COMPLETED entry doesn't list
+  // COMPLETED as a valid "next" status from itself. Already at the
+  // target status -> safe no-op, return as-is.
+  if (order.status === status) return order;
 
   const allowed = STATUS_FLOW[order.status] || [];
   if (!allowed.includes(status)) {
@@ -493,7 +559,7 @@ async function recalculateOrderTotals(orderId) {
 // its rows represent a customer's points ledger history (points already
 // earned/redeemed) rather than order-specific data, so instead of deleting
 // that history we just detach the reference (orderId -> null).
-export async function deleteOrder(id) {
+export async function deleteOrder(id, actor) {
   const order = await prisma.order.findUnique({ where: { id } });
   if (!order) throw new Error("Order not found");
 
@@ -523,6 +589,25 @@ export async function deleteOrder(id) {
       data: { status: "FREE" },
     });
   }
+
+  // Highest-priority audit case of the three wired up in this pass — this
+  // is a permanent delete of a potentially-paid order, requested
+  // specifically as a kept feature despite the record-keeping tradeoff
+  // discussed earlier. This is the row that lets you answer "who deleted
+  // order ORD-000123 and when" after the fact.
+  await writeAuditLog({
+    action: "ORDER_DELETED",
+    entityType: "Order",
+    entityId: id,
+    performedById: actor?.employeeId ?? actor?.id ?? null,
+    performedByRole: actor?.role ?? null,
+    metadata: {
+      orderNumber: order.orderNumber,
+      orderType: order.orderType,
+      status: order.status,
+      grandTotal: order.grandTotal,
+    },
+  });
 
   return { success: true, id };
 }

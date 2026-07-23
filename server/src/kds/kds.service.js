@@ -1,5 +1,10 @@
 // server/src/kds/kds.service.js
 import prisma from "../config/prisma.js";
+// Shared with pos/kot/kot.service.js — this used to be an independent
+// duplicate of the same numbering logic, which is exactly how the
+// count()-based collision bug got fixed in one copy and missed in the
+// other. One implementation now, imported here.
+import { generateKotNumber } from "../pos/kot/kot.service.js";
 
 const DEFAULT_TARGET_PREP_MINUTES = 15;
 
@@ -43,12 +48,13 @@ function startOfToday() {
   return d;
 }
 
-async function generateKotNumber() {
-  const count = await prisma.kitchenOrder.count();
-  return `KOT-${String(count + 1).padStart(6, "0")}`;
-}
-
-async function logStatusChange(kitchenOrderId, fromStatus, toStatus, changedById, reason) {
+async function logStatusChange(
+  kitchenOrderId,
+  fromStatus,
+  toStatus,
+  changedById,
+  reason,
+) {
   return prisma.kitchenOrderStatusLog.create({
     data: { kitchenOrderId, fromStatus, toStatus, changedById, reason },
   });
@@ -78,7 +84,10 @@ async function flagDelayedOrders() {
 
   const now = Date.now();
   const delayedIds = active
-    .filter((k) => now - new Date(k.acceptedAt).getTime() > k.targetPrepMinutes * 60000)
+    .filter(
+      (k) =>
+        now - new Date(k.acceptedAt).getTime() > k.targetPrepMinutes * 60000,
+    )
     .map((k) => k.id);
 
   if (delayedIds.length) {
@@ -115,7 +124,9 @@ export async function createKitchenOrdersForOrder(orderId) {
 
   // Safe to call again after items are added mid-order: only items that
   // don't already have a KitchenOrderItem get grouped/ticketed here.
-  const unticketedItems = order.items.filter((item) => item.kitchenOrderItems.length === 0);
+  const unticketedItems = order.items.filter(
+    (item) => item.kitchenOrderItems.length === 0,
+  );
 
   const groups = new Map();
   for (const item of unticketedItems) {
@@ -129,8 +140,12 @@ export async function createKitchenOrdersForOrder(orderId) {
   const createdTickets = [];
 
   for (const [kitchenSectionId, items] of groups) {
-    const prepTimes = items.map((i) => i.menuItem.prepTimeMinutes || 0).filter(Boolean);
-    const targetPrepMinutes = prepTimes.length ? Math.max(...prepTimes) : DEFAULT_TARGET_PREP_MINUTES;
+    const prepTimes = items
+      .map((i) => i.menuItem.prepTimeMinutes || 0)
+      .filter(Boolean);
+    const targetPrepMinutes = prepTimes.length
+      ? Math.max(...prepTimes)
+      : DEFAULT_TARGET_PREP_MINUTES;
 
     const kotNumber = await generateKotNumber();
 
@@ -142,7 +157,10 @@ export async function createKitchenOrdersForOrder(orderId) {
         targetPrepMinutes,
         priority,
         items: {
-          create: items.map((i) => ({ orderItemId: i.id, quantity: i.quantity })),
+          create: items.map((i) => ({
+            orderItemId: i.id,
+            quantity: i.quantity,
+          })),
         },
       },
       include: KITCHEN_ORDER_INCLUDE,
@@ -160,7 +178,16 @@ export async function createKitchenOrdersForOrder(orderId) {
 // ─────────────────────────────────────────────
 
 export async function listKitchenOrders(filters = {}) {
-  const { status, kitchenSectionId, chefId, priority, delayedOnly, orderType, search, store } = filters;
+  const {
+    status,
+    kitchenSectionId,
+    chefId,
+    priority,
+    delayedOnly,
+    orderType,
+    search,
+    store,
+  } = filters;
 
   await flagDelayedOrders();
 
@@ -191,13 +218,18 @@ export async function listKitchenOrders(filters = {}) {
   });
 
   // Stable sort: priority first (VIP/Express etc. float to top), then FIFO.
-  return tickets.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
+  return tickets.sort(
+    (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority],
+  );
 }
 
 export async function getKitchenOrderById(id) {
   const ticket = await prisma.kitchenOrder.findUnique({
     where: { id },
-    include: { ...KITCHEN_ORDER_INCLUDE, statusLogs: { orderBy: { createdAt: "asc" } } },
+    include: {
+      ...KITCHEN_ORDER_INCLUDE,
+      statusLogs: { orderBy: { createdAt: "asc" } },
+    },
   });
   if (!ticket) throw new Error("Kitchen order not found");
   return ticket;
@@ -207,7 +239,11 @@ export async function getKitchenOrderById(id) {
 // STATUS TRANSITIONS
 // ─────────────────────────────────────────────
 
-export async function updateKitchenOrderStatus(id, toStatus, { employeeId, reason } = {}) {
+export async function updateKitchenOrderStatus(
+  id,
+  toStatus,
+  { employeeId, reason } = {},
+) {
   const existing = await prisma.kitchenOrder.findUnique({ where: { id } });
   if (!existing) throw new Error("Kitchen order not found");
 
@@ -247,23 +283,38 @@ export async function acceptKitchenOrder(id, { chefId, employeeId } = {}) {
 // Explicit "chef starts cooking" step (Accepted -> Preparing in the spec's
 // workflow). acceptedAt (set on ACCEPTED) remains the timer anchor.
 export async function startPreparingKitchenOrder(id, { employeeId } = {}) {
-  return updateKitchenOrderStatus(id, "PREPARING", { employeeId, reason: "Preparation started" });
+  return updateKitchenOrderStatus(id, "PREPARING", {
+    employeeId,
+    reason: "Preparation started",
+  });
 }
 
 export async function markKitchenOrderReady(id, { employeeId } = {}) {
-  return updateKitchenOrderStatus(id, "READY", { employeeId, reason: "Marked ready" });
+  return updateKitchenOrderStatus(id, "READY", {
+    employeeId,
+    reason: "Marked ready",
+  });
 }
 
 export async function markKitchenOrderServed(id, { employeeId } = {}) {
-  return updateKitchenOrderStatus(id, "SERVED", { employeeId, reason: "Served to table" });
+  return updateKitchenOrderStatus(id, "SERVED", {
+    employeeId,
+    reason: "Served to table",
+  });
 }
 
 export async function completeKitchenOrder(id, { employeeId } = {}) {
-  return updateKitchenOrderStatus(id, "COMPLETED", { employeeId, reason: "Completed" });
+  return updateKitchenOrderStatus(id, "COMPLETED", {
+    employeeId,
+    reason: "Completed",
+  });
 }
 
 export async function cancelKitchenOrder(id, { employeeId, reason } = {}) {
-  return updateKitchenOrderStatus(id, "CANCELLED", { employeeId, reason: reason || "Cancelled" });
+  return updateKitchenOrderStatus(id, "CANCELLED", {
+    employeeId,
+    reason: reason || "Cancelled",
+  });
 }
 
 export async function recallKitchenOrder(id, { employeeId, reason } = {}) {
@@ -273,12 +324,24 @@ export async function recallKitchenOrder(id, { employeeId, reason } = {}) {
   });
 }
 
-export async function bulkUpdateKitchenOrderStatus(ids, toStatus, { employeeId, reason } = {}) {
-  return Promise.all(ids.map((id) => updateKitchenOrderStatus(id, toStatus, { employeeId, reason })));
+export async function bulkUpdateKitchenOrderStatus(
+  ids,
+  toStatus,
+  { employeeId, reason } = {},
+) {
+  return Promise.all(
+    ids.map((id) =>
+      updateKitchenOrderStatus(id, toStatus, { employeeId, reason }),
+    ),
+  );
 }
 
 export async function updateKitchenOrderPriority(id, priority) {
-  return prisma.kitchenOrder.update({ where: { id }, data: { priority }, include: KITCHEN_ORDER_INCLUDE });
+  return prisma.kitchenOrder.update({
+    where: { id },
+    data: { priority },
+    include: KITCHEN_ORDER_INCLUDE,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -304,14 +367,20 @@ export async function listKitchenNotes(kitchenOrderId) {
 
 async function getAveragePrepTimeMinutes(where) {
   const completed = await prisma.kitchenOrder.findMany({
-    where: { ...where, status: "COMPLETED", completedAt: { gte: startOfToday() }, acceptedAt: { not: null } },
+    where: {
+      ...where,
+      status: "COMPLETED",
+      completedAt: { gte: startOfToday() },
+      acceptedAt: { not: null },
+    },
     select: { acceptedAt: true, completedAt: true },
   });
   if (!completed.length) return null;
 
   const totalMinutes = completed.reduce(
-    (sum, k) => sum + (new Date(k.completedAt) - new Date(k.acceptedAt)) / 60000,
-    0
+    (sum, k) =>
+      sum + (new Date(k.completedAt) - new Date(k.acceptedAt)) / 60000,
+    0,
   );
   return Math.round((totalMinutes / completed.length) * 10) / 10;
 }
@@ -321,14 +390,28 @@ export async function getKitchenDashboard(store) {
 
   const where = store ? { order: { store } } : {};
 
-  const [preparingCount, readyCount, delayedCount, completedTodayCount, activeCount] = await Promise.all([
-    prisma.kitchenOrder.count({ where: { ...where, status: { in: ["ACCEPTED", "PREPARING"] } } }),
+  const [
+    preparingCount,
+    readyCount,
+    delayedCount,
+    completedTodayCount,
+    activeCount,
+  ] = await Promise.all([
+    prisma.kitchenOrder.count({
+      where: { ...where, status: { in: ["ACCEPTED", "PREPARING"] } },
+    }),
     prisma.kitchenOrder.count({ where: { ...where, status: "READY" } }),
     prisma.kitchenOrder.count({ where: { ...where, isDelayed: true } }),
     prisma.kitchenOrder.count({
-      where: { ...where, status: "COMPLETED", completedAt: { gte: startOfToday() } },
+      where: {
+        ...where,
+        status: "COMPLETED",
+        completedAt: { gte: startOfToday() },
+      },
     }),
-    prisma.kitchenOrder.count({ where: { ...where, status: { notIn: ["COMPLETED", "CANCELLED"] } } }),
+    prisma.kitchenOrder.count({
+      where: { ...where, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    }),
   ]);
 
   return {
@@ -368,7 +451,11 @@ async function dailyKitchenReport({ date } = {}) {
     return acc;
   }, {});
 
-  return { date: day.toISOString().slice(0, 10), totalOrders: tickets.length, byStatus };
+  return {
+    date: day.toISOString().slice(0, 10),
+    totalOrders: tickets.length,
+    byStatus,
+  };
 }
 
 async function prepTimeReport({ from, to } = {}) {
@@ -390,11 +477,13 @@ async function prepTimeReport({ from, to } = {}) {
     byStation[name].count += 1;
   }
 
-  return Object.entries(byStation).map(([station, { totalMinutes, count }]) => ({
-    station,
-    ordersCompleted: count,
-    averagePrepMinutes: Math.round((totalMinutes / count) * 10) / 10,
-  }));
+  return Object.entries(byStation).map(
+    ([station, { totalMinutes, count }]) => ({
+      station,
+      ordersCompleted: count,
+      averagePrepMinutes: Math.round((totalMinutes / count) * 10) / 10,
+    }),
+  );
 }
 
 async function delayedOrdersReport({ from, to } = {}) {
@@ -423,7 +512,13 @@ async function chefPerformanceReport({ from, to } = {}) {
   for (const k of completed) {
     const key = k.chefId;
     const minutes = (new Date(k.completedAt) - new Date(k.acceptedAt)) / 60000;
-    if (!byChef[key]) byChef[key] = { chefName: k.chef.fullName, ordersCompleted: 0, totalMinutes: 0, delayedCount: 0 };
+    if (!byChef[key])
+      byChef[key] = {
+        chefName: k.chef.fullName,
+        ordersCompleted: 0,
+        totalMinutes: 0,
+        delayedCount: 0,
+      };
     byChef[key].ordersCompleted += 1;
     byChef[key].totalMinutes += minutes;
     if (k.isDelayed) byChef[key].delayedCount += 1;
@@ -433,7 +528,8 @@ async function chefPerformanceReport({ from, to } = {}) {
     chefName: c.chefName,
     ordersCompleted: c.ordersCompleted,
     delayedCount: c.delayedCount,
-    averagePrepMinutes: Math.round((c.totalMinutes / c.ordersCompleted) * 10) / 10,
+    averagePrepMinutes:
+      Math.round((c.totalMinutes / c.ordersCompleted) * 10) / 10,
   }));
 }
 
@@ -449,7 +545,10 @@ async function stationLoadReport({ from, to } = {}) {
     byStation[name] = (byStation[name] || 0) + 1;
   }
 
-  return Object.entries(byStation).map(([station, totalOrders]) => ({ station, totalOrders }));
+  return Object.entries(byStation).map(([station, totalOrders]) => ({
+    station,
+    totalOrders,
+  }));
 }
 
 async function cancelledOrdersReport({ from, to } = {}) {
@@ -458,7 +557,11 @@ async function cancelledOrdersReport({ from, to } = {}) {
     include: {
       order: true,
       kitchenSection: true,
-      statusLogs: { where: { toStatus: "CANCELLED" }, orderBy: { createdAt: "desc" }, take: 1 },
+      statusLogs: {
+        where: { toStatus: "CANCELLED" },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
     },
     orderBy: { updatedAt: "desc" },
   });
@@ -476,7 +579,9 @@ const REPORT_HANDLERS = {
 export async function getKitchenReports(type, filters = {}) {
   const handler = REPORT_HANDLERS[type];
   if (!handler) {
-    throw new Error(`Unknown report type "${type}". Valid types: ${Object.keys(REPORT_HANDLERS).join(", ")}`);
+    throw new Error(
+      `Unknown report type "${type}". Valid types: ${Object.keys(REPORT_HANDLERS).join(", ")}`,
+    );
   }
   return handler(filters);
 }

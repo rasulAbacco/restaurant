@@ -8,7 +8,7 @@ import prisma from "../../config/prisma.js";
 // Basing it on the highest kotNumber actually seen removes that
 // possibility — lexicographic DESC sort matches numeric order here because
 // every kotNumber is zero-padded to the same width.
-async function generateKotNumber(client = prisma) {
+export async function generateKotNumber(client = prisma) {
   const last = await client.kitchenOrder.findFirst({
     orderBy: { kotNumber: "desc" },
     select: { kotNumber: true },
@@ -171,6 +171,25 @@ const LIFECYCLE_TIMESTAMP_FIELD = {
   RECALLED: "recalledAt",
 };
 
+// FEATURE: offline mode (KDS). A status update made while a kitchen
+// device was offline gets queued and replayed later — see
+// client/src/offline/kdsQueue.js. Without this guard, a stale queued
+// update (e.g. "mark READY") could replay AFTER the same ticket was
+// already advanced further by another screen/device in the meantime
+// (e.g. already SERVED), silently regressing it back to an earlier
+// stage. CANCELLED/RECALLED are deliberately left out of this map — an
+// order can be cancelled from any stage, and RECALLED is itself a
+// deliberate backward action staff take on purpose, not something to
+// block.
+const KOT_STAGE_RANK = {
+  NEW: 0,
+  ACCEPTED: 1,
+  PREPARING: 2,
+  READY: 3,
+  SERVED: 4,
+  COMPLETED: 5,
+};
+
 // Maps a KOT reaching a given status onto the parent Order's status, so the
 // Orders page badge actually cycles Accepted -> Preparing -> Ready -> Served
 // instead of jumping straight from Accepted to Ready (the old code only
@@ -191,6 +210,18 @@ export async function updateKotStatus(
 ) {
   const existing = await prisma.kitchenOrder.findUnique({ where: { id } });
   if (!existing) throw new Error("Kitchen order not found");
+
+  // See KOT_STAGE_RANK above — a replayed offline update that's already
+  // at or behind the ticket's current stage is a safe no-op, not an
+  // error and not a regression.
+  const isGuardedTransition =
+    status in KOT_STAGE_RANK && existing.status in KOT_STAGE_RANK;
+  if (
+    isGuardedTransition &&
+    KOT_STAGE_RANK[status] <= KOT_STAGE_RANK[existing.status]
+  ) {
+    return existing;
+  }
 
   const timestampField = LIFECYCLE_TIMESTAMP_FIELD[status];
 

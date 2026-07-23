@@ -3,16 +3,27 @@ import prisma from "../../config/prisma.js";
 
 const includeRelations = {
   supplier: true,
-  items: { include: { ingredient: { select: { id: true, name: true, itemCode: true } } } },
+  items: {
+    include: {
+      ingredient: { select: { id: true, name: true, itemCode: true } },
+    },
+  },
 };
 
-// Simple sequential PO number: PO-000123. Not race-proof under heavy concurrent
-// writes (two requests could read the same count before either inserts), but
-// fine for a single-location restaurant's write volume. Revisit with a DB
-// sequence/transaction lock if this ever becomes a real bottleneck.
+// FIX: was count()+1, not race-proof AND collides with an existing
+// poNumber once any PurchaseOrder is ever deleted — same bug/fix as
+// pos.service.js's generateOrderNumber. Basing it on the highest number
+// actually seen removes the collision risk from deletions (concurrent-write
+// races are a separate, lower-priority concern noted below).
 const generatePoNumber = async () => {
-  const count = await prisma.purchaseOrder.count();
-  return `PO-${String(count + 1).padStart(6, "0")}`;
+  const last = await prisma.purchaseOrder.findFirst({
+    orderBy: { poNumber: "desc" },
+    select: { poNumber: true },
+  });
+  const lastNum = last
+    ? parseInt(last.poNumber.replace("PO-", ""), 10) || 0
+    : 0;
+  return `PO-${String(lastNum + 1).padStart(6, "0")}`;
 };
 
 export const listPurchaseOrders = ({ supplierId, status }) => {
@@ -48,13 +59,18 @@ export const createPurchaseOrder = (data) =>
       };
     });
 
-    const totalAmount = itemsWithTotals.reduce((sum, i) => sum + i.totalAmount, 0);
+    const totalAmount = itemsWithTotals.reduce(
+      (sum, i) => sum + i.totalAmount,
+      0,
+    );
 
     const purchaseOrder = await tx.purchaseOrder.create({
       data: {
         poNumber,
         supplierId: data.supplierId,
-        expectedDelivery: data.expectedDelivery ? new Date(data.expectedDelivery) : null,
+        expectedDelivery: data.expectedDelivery
+          ? new Date(data.expectedDelivery)
+          : null,
         notes: data.notes,
         totalAmount,
         items: { create: itemsWithTotals },
@@ -78,7 +94,9 @@ export const updatePurchaseOrderDetails = (id, { expectedDelivery, notes }) =>
   prisma.purchaseOrder.update({
     where: { id },
     data: {
-      expectedDelivery: expectedDelivery ? new Date(expectedDelivery) : undefined,
+      expectedDelivery: expectedDelivery
+        ? new Date(expectedDelivery)
+        : undefined,
       notes,
     },
     include: includeRelations,
@@ -95,7 +113,9 @@ export const deletePurchaseOrder = async (id) => {
     throw err;
   }
   if (po.status !== "DRAFT") {
-    const err = new Error("Only DRAFT purchase orders can be deleted — cancel it instead");
+    const err = new Error(
+      "Only DRAFT purchase orders can be deleted — cancel it instead",
+    );
     err.code = "NOT_DRAFT";
     throw err;
   }

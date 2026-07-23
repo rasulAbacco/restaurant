@@ -41,7 +41,9 @@ export async function getBillingSummary(orderId) {
       table: true,
       customer: true,
       waiter: { select: { fullName: true, employeeCode: true } },
-      items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+      items: {
+        include: { menuItem: true, addOns: { include: { addOn: true } } },
+      },
       payments: true,
       discountsApplied: true,
       invoice: true,
@@ -67,8 +69,16 @@ export async function getBillingSummary(orderId) {
     orderNumber: order.orderNumber,
     orderType: order.orderType,
     status: order.status,
-    table: order.table ? { id: order.table.id, name: order.table.name, section: order.table.section } : null,
-    customer: order.customer ? { name: order.customer.name, mobile: order.customer.mobile } : null,
+    table: order.table
+      ? {
+          id: order.table.id,
+          name: order.table.name,
+          section: order.table.section,
+        }
+      : null,
+    customer: order.customer
+      ? { name: order.customer.name, mobile: order.customer.mobile }
+      : null,
     waiter: order.waiter ? order.waiter.fullName : null,
     items: order.items.map(toInvoiceLine),
     subtotal,
@@ -90,15 +100,43 @@ export async function getBillingSummary(orderId) {
 export async function completeBilling(orderId, { payments, discount } = {}) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw new Error("Order not found");
-  if (order.status === "COMPLETED") throw new Error("This order has already been completed and billed.");
-  if (order.status === "CANCELLED") throw new Error("Cannot bill a cancelled order.");
+
+  // FEATURE: offline billing replay guard (cash-only offline billing —
+  // see client/src/offline/billingQueue.js). A retried "complete
+  // billing" call for an order that's already COMPLETED — e.g. an
+  // offline-queued cash payment replaying after it actually succeeded
+  // once already, but the client never saw the response — must not
+  // throw or create a second Payment/Invoice. Return the existing
+  // invoice/payments instead; this also protects against a plain
+  // accidental double-click on "Complete Payment", independent of
+  // offline mode entirely.
+  if (order.status === "COMPLETED") {
+    const existingInvoice = await invoicesService.getInvoiceByOrder(orderId);
+    if (existingInvoice) {
+      const existingPayments =
+        await paymentsService.listPaymentsForOrder(orderId);
+      return {
+        order,
+        payments: existingPayments,
+        invoice: existingInvoice,
+        alreadyBilled: true,
+      };
+    }
+    // COMPLETED but no invoice on record — genuinely unexpected state,
+    // not a safe one to silently paper over. Surface the original error.
+    throw new Error("This order has already been completed and billed.");
+  }
+  if (order.status === "CANCELLED")
+    throw new Error("Cannot bill a cancelled order.");
 
   if (!payments || payments.length === 0) {
     throw new Error("At least one payment is required to complete billing.");
   }
   for (const p of payments) {
-    if (!p.method) throw new Error("Every payment line needs a payment method.");
-    if (!p.amount || Number(p.amount) <= 0) throw new Error("Every payment line needs a positive amount.");
+    if (!p.method)
+      throw new Error("Every payment line needs a payment method.");
+    if (!p.amount || Number(p.amount) <= 0)
+      throw new Error("Every payment line needs a positive amount.");
   }
 
   // Optional discount applied at the billing counter (e.g. a manual
@@ -123,14 +161,17 @@ export async function completeBilling(orderId, { payments, discount } = {}) {
   const paymentCheck = await paymentsService.syncOrderPaymentStatus(orderId);
   if (paymentCheck.paymentStatus !== "PAID") {
     throw new Error(
-      `Payment is incomplete — received ₹${paymentCheck.totalPaid.toFixed(2)} of ₹${paymentCheck.grandTotal.toFixed(2)}. The order has not been marked completed and the table has not been freed.`
+      `Payment is incomplete — received ₹${paymentCheck.totalPaid.toFixed(2)} of ₹${paymentCheck.grandTotal.toFixed(2)}. The order has not been marked completed and the table has not been freed.`,
     );
   }
 
   // Only now — with a fully-paid order — do we complete the order. This is
   // what triggers stock consumption AND frees the table (both already live
   // inside posService.updateOrderStatus for the COMPLETED transition).
-  const completedOrder = await posService.updateOrderStatus(orderId, "COMPLETED");
+  const completedOrder = await posService.updateOrderStatus(
+    orderId,
+    "COMPLETED",
+  );
 
   const invoice = await invoicesService.generateInvoice(orderId, {});
   const fullInvoice = await invoicesService.getInvoiceByOrder(orderId);

@@ -1,9 +1,21 @@
 // server/src/pos/invoices/invoices.service.js
 import prisma from "../../config/prisma.js";
 
+// FIX: was count()+1 — this one is especially live, since Owner-deleting an
+// order (pos.service.js's deleteOrder) explicitly deletes that order's
+// Invoice row too. That shrinks the count, so the very next invoice
+// generated can collide with an existing invoiceNumber — same bug/fix as
+// pos.service.js's generateOrderNumber. Basing it on the highest number
+// actually seen removes the collision.
 async function generateInvoiceNumber() {
-  const count = await prisma.invoice.count();
-  return `INV-${String(count + 1).padStart(6, "0")}`;
+  const last = await prisma.invoice.findFirst({
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+  const lastNum = last
+    ? parseInt(last.invoiceNumber.replace("INV-", ""), 10) || 0
+    : 0;
+  return `INV-${String(lastNum + 1).padStart(6, "0")}`;
 }
 
 export async function generateInvoice(orderId, { gstNumber } = {}) {
@@ -26,7 +38,9 @@ export async function getInvoiceByOrder(orderId) {
     include: {
       order: {
         include: {
-          items: { include: { menuItem: true, addOns: { include: { addOn: true } } } },
+          items: {
+            include: { menuItem: true, addOns: { include: { addOn: true } } },
+          },
           customer: true,
           table: true,
           payments: true,

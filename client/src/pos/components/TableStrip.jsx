@@ -1,8 +1,9 @@
 // src/pos/components/TableStrip.jsx
 import { useEffect, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, WifiOff } from "lucide-react";
 import { getTablesBoard, getFloors } from "../api/posApi";
 import TableManagerModal from "./TableManagerModal";
+import { fetchWithOfflineFallback } from "../../offline/offlineCache";
 
 const STATUS_STYLE = {
   FREE: "border-slate-200 bg-white text-slate-700 hover:border-blue-400",
@@ -23,6 +24,15 @@ const STATUS_SORT_RANK = { FREE: 0, OCCUPIED: 1, RESERVED: 2 };
 // Staff now pick a floor first (Ground Floor / First Floor / Rooftop / …),
 // then the table strip below only shows that floor's tables — instead of
 // every table across the whole restaurant in one long scrolling row.
+//
+// FEATURE: offline mode, phase 1 step 7. Floors/tables fall back to the
+// last-synced cache when the network fails. IMPORTANT: that cached
+// FREE/OCCUPIED status can be stale (another device may have occupied a
+// table since the last sync) — so while offline, tapping an OCCUPIED table
+// to "add items to an existing order" is disabled entirely. Only starting
+// a brand-new order on a table shown as FREE is supported offline; that's
+// the one flow the offline queue (offlineQueue.js) actually knows how to
+// replay safely.
 export default function TableStrip({ selectedTableId, onSelect }) {
   const [floors, setFloors] = useState([]);
   const [floorsLoading, setFloorsLoading] = useState(true);
@@ -31,6 +41,7 @@ export default function TableStrip({ selectedTableId, onSelect }) {
   const [tables, setTables] = useState([]);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [showManager, setShowManager] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
     loadFloors();
@@ -39,8 +50,9 @@ export default function TableStrip({ selectedTableId, onSelect }) {
   async function loadFloors() {
     setFloorsLoading(true);
     try {
-      const data = await getFloors();
+      const { data, fromCache } = await fetchWithOfflineFallback("floors", getFloors);
       setFloors(data);
+      if (fromCache) setIsOffline(true);
       // Default to the first floor rather than an "all floors" view — the
       // point of this step is picking one floor before seeing its tables.
       setSelectedFloorId((prev) => prev ?? data[0]?.id ?? null);
@@ -53,8 +65,11 @@ export default function TableStrip({ selectedTableId, onSelect }) {
 
   function loadTables(floorId) {
     setTablesLoading(true);
-    getTablesBoard(floorId ? { floorId } : {})
-      .then(setTables)
+    fetchWithOfflineFallback(`tables:${floorId}`, () => getTablesBoard(floorId ? { floorId } : {}))
+      .then(({ data, fromCache }) => {
+        setTables(data);
+        if (fromCache) setIsOffline(true);
+      })
       .catch(() => setTables([]))
       .finally(() => setTablesLoading(false));
   }
@@ -84,6 +99,13 @@ export default function TableStrip({ selectedTableId, onSelect }) {
 
   return (
     <div>
+      {isOffline && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+          <WifiOff className="h-3.5 w-3.5" />
+          Offline — showing last-synced tables. Occupied tables can't be added to until back online.
+        </div>
+      )}
+
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-medium text-slate-400">Select a floor</span>
         {/* <button
@@ -130,20 +152,25 @@ export default function TableStrip({ selectedTableId, onSelect }) {
               {sortedTables.map((t) => {
                 const isSelected = t.id === selectedTableId;
                 const isReserved = t.status === "RESERVED";
+                // Offline + occupied = can't safely add to an existing
+                // order (see file header) — disable it, same as RESERVED.
+                const isLockedOffline = isOffline && t.status === "OCCUPIED" && !isSelected;
+                const isDisabled = (isReserved && !isSelected) || isLockedOffline;
                 return (
                   <button
                     key={t.id}
-                    disabled={isReserved && !isSelected}
+                    disabled={isDisabled}
+                    title={isLockedOffline ? "Adding to an occupied table needs a connection" : undefined}
                     onClick={() => onSelect(t)}
                     className={`shrink-0 rounded-lg border px-3 py-2 font-mono text-sm font-medium transition-colors ${
                       isSelected
                         ? "border-blue-600 bg-blue-600 text-white"
                         : STATUS_STYLE[t.status] || STATUS_STYLE.FREE
-                    }`}
+                    } ${isLockedOffline ? "cursor-not-allowed opacity-50" : ""}`}
                   >
                     {t.name}
                     {t.capacity ? <span className="ml-1 text-xs opacity-70">· {t.capacity}p</span> : null}
-                    {t.status === "OCCUPIED" && !isSelected && (
+                    {t.status === "OCCUPIED" && !isSelected && !isLockedOffline && (
                       <span className="ml-1 text-xs font-semibold">· Add items</span>
                     )}
                   </button>
