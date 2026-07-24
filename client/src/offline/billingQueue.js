@@ -1,14 +1,20 @@
 // client/src/offline/billingQueue.js
 import { getDb } from "./db";
 import { completeBilling } from "../pos/api/posApi";
+import { broadcastChange, subscribeToBroadcast } from "./broadcast";
 
 const listeners = new Set();
 function notify() {
   listeners.forEach((fn) => fn());
+  broadcastChange("billing");
 }
 export function subscribeToBillingQueue(fn) {
   listeners.add(fn);
-  return () => listeners.delete(fn);
+  const unsubBroadcast = subscribeToBroadcast("billing", fn);
+  return () => {
+    listeners.delete(fn);
+    unsubBroadcast();
+  };
 }
 
 function isNetworkError(err) {

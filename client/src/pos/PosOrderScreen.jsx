@@ -60,6 +60,14 @@ export default function PosOrderScreen() {
           name: menuItem.name,
           sellingPrice: Number(menuItem.sellingPrice),
           gstPercent: Number(menuItem.gstPercent || 0),
+          // Kept only for the offline Kitchen Display preview ticket (see
+          // getQueuedKots() in offline/offlineQueue.js) — never sent to
+          // the server, which derives the section itself from the
+          // MenuItem record. menuItem.kitchenSection comes from the
+          // backend's `include: { kitchenSection: true }` on GET /menu.
+          kitchenSectionId:
+            menuItem.kitchenSectionId || menuItem.kitchenSection?.id || null,
+          kitchenSectionName: menuItem.kitchenSection?.name || null,
           quantity: 1,
           notes: "",
           addOns: [],
@@ -138,17 +146,37 @@ export default function PosOrderScreen() {
         return;
       }
 
+      // Display-only metadata for the Kitchen Display Screen to render a
+      // "this order exists, still syncing" ticket while offline — never
+      // sent to the server (see placeDineInOrder's ticketMeta param and
+      // getQueuedKots() in offline/offlineQueue.js).
+      const ticketMeta = {
+        orderType,
+        tableName: selectedTable?.name || null,
+        items: cart.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          notes: i.notes || null,
+          sellingPrice: i.sellingPrice,
+          kitchenSectionId: i.kitchenSectionId,
+          kitchenSectionName: i.kitchenSectionName,
+        })),
+      };
+
       // Dine-in: goes through the offline queue. placeDineInOrder tries the
       // real network call first (the same atomic create+send-to-kitchen
       // endpoint as before, just as one call instead of two) and only
       // falls back to the local IndexedDB queue on a genuine connectivity
       // failure — see offlineQueue.js.
-      const { order, queuedOffline } = await placeDineInOrder({
-        orderType,
-        tableId,
-        store: "Main Store",
-        items,
-      });
+      const { order, queuedOffline } = await placeDineInOrder(
+        {
+          orderType,
+          tableId,
+          store: "Main Store",
+          items,
+        },
+        ticketMeta,
+      );
 
       setLastOrder(order);
       setShowSuccessToast(true);

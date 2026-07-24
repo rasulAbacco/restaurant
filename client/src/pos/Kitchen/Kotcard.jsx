@@ -82,6 +82,15 @@ export default function KotCard({
   updating,
   onAddNote,
   pendingSync = false,
+  // This order was placed offline and hasn't reached the server yet —
+  // it's a preview built entirely from what the POS terminal had queued
+  // locally (see getQueuedKots() in offlineQueue.js), not a real
+  // KitchenOrder row. Ready/Served still work on it (see
+  // advanceQueuedKotStatus in offlineQueue.js) — the status is just
+  // tracked locally and replayed onto the real KOT once this order
+  // syncs. This flag now only drives the informational "Awaiting sync"
+  // badge below, nothing else.
+  awaitingCreate = false,
 }) {
   const elapsedMinutes = useElapsedMinutes(
     kot.createdAt,
@@ -180,6 +189,14 @@ export default function KotCard({
             Sync pending
           </span>
         )}
+        {awaitingCreate && (
+          <span
+            title="This order was placed offline and hasn't reached the server yet. Ready/Served still work — they'll sync automatically once the connection is back."
+            className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700"
+          >
+            Awaiting sync
+          </span>
+        )}
       </div>
 
       <ul className="mt-3 flex-1 space-y-2 border-t border-slate-100 pt-3">
@@ -237,7 +254,7 @@ export default function KotCard({
 
       {action && (
         <button
-          onClick={() => onAdvance(kot.id, action.next)}
+          onClick={() => onAdvance(kot, action.next)}
           disabled={updating}
           className="mt-4 w-full rounded-xl bg-blue-600 py-2.5 text-sm font-bold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
         >

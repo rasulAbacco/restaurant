@@ -13,6 +13,17 @@ import {
   getPendingOrderIds,
   subscribeToOrdersQueue,
 } from "../offline/ordersQueue";
+// FIX: an order queued offline patches the cached tables board (see
+// patchCachedTableAfterOfflineOrder in offlineCache.js) but this page only
+// re-reads that cache on its own poll/mount — subscribe so a newly placed
+// offline order (or one that just synced) shows up here immediately too.
+import { subscribeToQueue } from "../offline/offlineQueue";
+// FIX: a Ready/Served tap on the Kitchen Display changes this table's
+// kitchenStatus badge here too, but only the KDS itself was told about
+// it (via load() in its own handler) — this board just polled every 8s
+// blind to it. Subscribing means the badge updates immediately instead
+// of lagging behind the kitchen by up to POLL_INTERVAL_MS.
+import { subscribeToKdsQueue } from "../offline/kdsQueue";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -124,9 +135,13 @@ export default function OrdersPage() {
     refreshPendingIds();
     const id = setInterval(load, POLL_INTERVAL_MS);
     const unsubscribe = subscribeToOrdersQueue(refreshPendingIds);
+    const unsubscribeOrdersOutbox = subscribeToQueue(load);
+    const unsubscribeKds = subscribeToKdsQueue(load);
     return () => {
       clearInterval(id);
       unsubscribe();
+      unsubscribeOrdersOutbox();
+      unsubscribeKds();
     };
   }, [load, refreshPendingIds]);
 

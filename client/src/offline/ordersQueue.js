@@ -1,6 +1,7 @@
 // client/src/offline/ordersQueue.js
 import { getDb } from "./db";
 import { updateOrderStatus } from "../pos/api/posApi";
+import { broadcastChange, subscribeToBroadcast } from "./broadcast";
 
 // Same pattern as kdsQueue.js — patching an EXISTING order's status is
 // naturally idempotent (server-side: pos.service.js's updateOrderStatus
@@ -10,10 +11,15 @@ import { updateOrderStatus } from "../pos/api/posApi";
 const listeners = new Set();
 function notify() {
   listeners.forEach((fn) => fn());
+  broadcastChange("orderStatus");
 }
 export function subscribeToOrdersQueue(fn) {
   listeners.add(fn);
-  return () => listeners.delete(fn);
+  const unsubBroadcast = subscribeToBroadcast("orderStatus", fn);
+  return () => {
+    listeners.delete(fn);
+    unsubBroadcast();
+  };
 }
 
 function isNetworkError(err) {

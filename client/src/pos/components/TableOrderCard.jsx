@@ -122,7 +122,7 @@ export default function TableOrderCard({
   // the same source the Kitchen Display itself reads from. Falls back to
   // order.status only for an order that hasn't been sent to the kitchen yet.
   const displayStatus = order?.kitchenStatus || order?.status;
-  const canComplete = displayStatus === "SERVED";
+  const canComplete = displayStatus === "SERVED" && !order.awaitingCreate;
   const category = deriveTableCategory(table);
   const categoryMeta = CATEGORY_META[category];
   const typeBadge = order?.orderType ? ORDER_TYPE_BADGE[order.orderType] : null;
@@ -172,6 +172,14 @@ export default function TableOrderCard({
               Sync pending
             </span>
           )}
+          {order.awaitingCreate && (
+            <span
+              title="This order was placed offline and hasn't reached the server yet."
+              className="mt-2 inline-flex w-fit items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700"
+            >
+              Awaiting sync
+            </span>
+          )}
 
           <div className="mt-3 space-y-2.5 border-t border-slate-100 pt-4">
             <div className="flex items-center justify-between text-sm">
@@ -193,7 +201,9 @@ export default function TableOrderCard({
               </span>
             </div>
             <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total</span>
+              <span className="text-slate-500">
+                Total{order.awaitingCreate ? " (est.)" : ""}
+              </span>
               <span className="font-mono text-base font-bold text-blue-600">
                 ₹{Number(order.grandTotal).toFixed(2)}
               </span>
@@ -239,7 +249,9 @@ export default function TableOrderCard({
                 title={
                   canComplete
                     ? undefined
-                    : "Available once the order has been served"
+                    : order.awaitingCreate
+                      ? "This order hasn't reached the server yet — billing needs it to sync first"
+                      : "Available once the order has been served"
                 }
                 className="mt-3 w-full rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white shadow-sm shadow-emerald-200 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
               >
@@ -247,7 +259,9 @@ export default function TableOrderCard({
               </button>
               {!canComplete && (
                 <p className="mt-1.5 text-center text-xs text-slate-400">
-                  Available once the order is marked Served
+                  {order.awaitingCreate
+                    ? "Billing available once this order syncs"
+                    : "Available once the order is marked Served"}
                 </p>
               )}
             </>

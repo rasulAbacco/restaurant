@@ -15,6 +15,14 @@ import {
   getPendingBillingOrderIds,
   subscribeToBillingQueue,
 } from "../offline/billingQueue";
+// FIX: a dine-in order placed while offline (see offlineQueue.js /
+// PosOrderScreen.jsx) doesn't exist on the server yet, so it never shows
+// up in the "Active Orders" list above (that list is real, server-backed
+// orders only) — a cashier offline had no way to even see that a table
+// had an unbilled order in progress. This surfaces those queued orders
+// read-only, clearly marked as not billable yet (there's no real orderId
+// to bill against until it syncs).
+import { getQueueSnapshot, subscribeToQueue } from "../offline/offlineQueue";
 
 const PAYMENT_METHODS = [
   { key: "CASH", label: "Cash" },
@@ -80,10 +88,49 @@ export default function Billings() {
   const [kitchenError, setKitchenError] = useState(null);
 
   const [isOffline, setIsOffline] = useState(false);
+  // FIX: `isOffline` above only reflects "a fetch fell back to cache at
+  // some point" — useful for the banner, but not reliable enough to gate
+  // the payment-method buttons on (it can stay stuck true after
+  // reconnecting, since nothing resets it until the next fetch happens
+  // to run). This tracks the actual live connection so Card/UPI can be
+  // disabled immediately, instead of only erroring after Complete Payment
+  // is clicked.
+  const [online, setOnline] = useState(
+    typeof navigator !== "undefined" ? navigator.onLine : true,
+  );
+  useEffect(() => {
+    function handleOnline() {
+      setOnline(true);
+    }
+    function handleOffline() {
+      setOnline(false);
+    }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+  // If connectivity drops while Card/UPI was already selected, fall back
+  // to Cash automatically rather than leaving a now-disabled option
+  // selected with no way to proceed.
+  useEffect(() => {
+    if (!online && mode !== "CASH") setMode("CASH");
+  }, [online, mode]);
   // orderIds with a cash billing queued but not yet synced.
   const [pendingBillingOrderIds, setPendingBillingOrderIds] = useState(
     new Set(),
   );
+  // Dine-in orders still sitting in the offline outbox — not real orders
+  // yet, so they can't be selected/billed, but staff should still be able
+  // to SEE them here rather than wondering where a table's order went.
+  const [queuedOrders, setQueuedOrders] = useState([]);
+
+  const refreshQueuedOrders = useCallback(async () => {
+    const snapshot = await getQueueSnapshot();
+    setQueuedOrders(snapshot.items.filter((i) => i.status === "pending"));
+  }, []);
 
   const loadOrders = useCallback(() => {
     setOrdersLoading(true);
@@ -109,9 +156,14 @@ export default function Billings() {
   useEffect(() => {
     loadOrders();
     refreshPendingBillingIds();
+    refreshQueuedOrders();
     const unsubscribe = subscribeToBillingQueue(refreshPendingBillingIds);
-    return unsubscribe;
-  }, [loadOrders, refreshPendingBillingIds]);
+    const unsubscribeOutbox = subscribeToQueue(refreshQueuedOrders);
+    return () => {
+      unsubscribe();
+      unsubscribeOutbox();
+    };
+  }, [loadOrders, refreshPendingBillingIds, refreshQueuedOrders]);
 
   const loadSummary = useCallback((orderId) => {
     if (!orderId) return;
@@ -125,12 +177,21 @@ export default function Billings() {
     setDiscountType(null);
     setDiscountValue("");
     setDiscountReason("");
-    getBillingSummary(orderId)
-      .then((data) => {
+    // FIX: this used to call getBillingSummary(orderId) directly with no
+    // offline fallback — opening ANY bill while offline just failed
+    // outright, even for an order the cashier had already looked at
+    // minutes earlier while still online. Caching per-orderId means a
+    // bill already viewed once stays viewable (and payable, cash-only)
+    // for the rest of the offline stretch.
+    fetchWithOfflineFallback(`billing:summary:${orderId}`, () =>
+      getBillingSummary(orderId),
+    )
+      .then(({ data, fromCache }) => {
         if (!data || !Array.isArray(data.items)) {
           throw new Error("Billing summary came back in an unexpected shape.");
         }
         setSummary(data);
+        if (fromCache) setIsOffline(true);
         setSplitLines([
           {
             id: makeSplitLineId(),
@@ -369,6 +430,35 @@ export default function Billings() {
               })}
             </ul>
           )}
+          {queuedOrders.length > 0 && (
+            <div className="border-t border-slate-100">
+              <p className="px-4 pt-3 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                Awaiting sync — not billable yet
+              </p>
+              <ul className="divide-y divide-slate-50">
+                {queuedOrders.map((item) => (
+                  <li
+                    key={item.clientRequestId}
+                    title="This order hasn't reached the server yet — it'll appear in the list above, billable, once it syncs."
+                    className="flex cursor-not-allowed flex-col items-start gap-0.5 px-4 py-3 opacity-60"
+                  >
+                    <span className="font-semibold text-slate-800">
+                      {item.ticketMeta?.tableName ||
+                        item.ticketMeta?.orderType?.replace("_", " ") ||
+                        "Order"}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      {(item.ticketMeta?.items || []).length} item
+                      {(item.ticketMeta?.items || []).length === 1 ? "" : "s"}
+                    </span>
+                    <span className="mt-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                      Awaiting sync
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
 
@@ -589,19 +679,30 @@ export default function Billings() {
                     Payment Method
                   </p>
                   <div className="flex gap-2">
-                    {PAYMENT_METHODS.map((m) => (
-                      <button
-                        key={m.key}
-                        onClick={() => setMode(m.key)}
-                        className={`flex-1 rounded-lg border py-2 text-sm font-semibold transition-colors ${
-                          mode === m.key
-                            ? "border-blue-600 bg-blue-600 text-white"
-                            : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
+                    {PAYMENT_METHODS.map((m) => {
+                      const disabled = !online && m.key !== "CASH";
+                      return (
+                        <button
+                          key={m.key}
+                          onClick={() => setMode(m.key)}
+                          disabled={disabled}
+                          title={
+                            disabled
+                              ? "Needs an internet connection — only Cash works offline"
+                              : undefined
+                          }
+                          className={`flex-1 rounded-lg border py-2 text-sm font-semibold transition-colors ${
+                            mode === m.key
+                              ? "border-blue-600 bg-blue-600 text-white"
+                              : disabled
+                                ? "cursor-not-allowed border-slate-100 text-slate-300"
+                                : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
                     {/* <button
                       onClick={() => setMode("SPLIT")}
                       className={`flex-1 rounded-lg border py-2 text-sm font-semibold transition-colors ${

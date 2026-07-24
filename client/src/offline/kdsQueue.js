@@ -2,16 +2,22 @@
 import { getDb } from "./db";
 import { cacheReferenceData, getCachedReferenceData } from "./offlineCache";
 import { updateKotStatus } from "../pos/api/posApi";
+import { broadcastChange, subscribeToBroadcast } from "./broadcast";
 
 const KDS_CACHE_KEY = "kds:display";
 
 const listeners = new Set();
 function notify() {
   listeners.forEach((fn) => fn());
+  broadcastChange("kds");
 }
 export function subscribeToKdsQueue(fn) {
   listeners.add(fn);
-  return () => listeners.delete(fn);
+  const unsubBroadcast = subscribeToBroadcast("kds", fn);
+  return () => {
+    listeners.delete(fn);
+    unsubBroadcast();
+  };
 }
 
 // Same distinction as offlineQueue.js's isNetworkError: only a genuine
@@ -46,7 +52,12 @@ async function patchCachedKotStatus(kotId, status) {
 export async function updateKotStatusOffline(kotId, status) {
   if (typeof navigator !== "undefined" && navigator.onLine) {
     try {
-      return await updateKotStatus(kotId, status);
+      const result = await updateKotStatus(kotId, status);
+      // Succeeded straight to the server — still notify so any OTHER tab
+      // (e.g. this same restaurant's Orders/Tables board open elsewhere)
+      // doesn't have to wait for its own next poll to see it.
+      notify();
+      return result;
     } catch (err) {
       if (!isNetworkError(err)) throw err; // a real error — surface it now, don't queue it
     }

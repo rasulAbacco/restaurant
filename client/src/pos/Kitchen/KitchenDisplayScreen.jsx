@@ -10,6 +10,18 @@ import {
   getPendingKotIds,
   subscribeToKdsQueue,
 } from "../../offline/kdsQueue";
+// FIX: orders placed while offline were queued in IndexedDB (see
+// offlineQueue.js) but this screen only ever read getKitchenDisplay's
+// cached SERVER response — so an order created offline never appeared
+// here at all until it synced. getQueuedKots() turns those queued orders
+// into the same shape as a real KOT (see kot.service.js's one-ticket-
+// per-kitchen-section grouping) so they show up immediately, marked as
+// "Awaiting sync" and not actionable until the real ticket exists.
+import {
+  getQueuedKots,
+  subscribeToQueue,
+  advanceQueuedKotStatus,
+} from "../../offline/offlineQueue";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -28,6 +40,11 @@ export default function KitchenDisplayScreen() {
   const canAddNotes = isKitchen();
 
   const [kots, setKots] = useState([]);
+  // Orders still sitting in the offline outbox, not yet created on the
+  // server — see getQueuedKots() in offlineQueue.js. Kept separate from
+  // `kots` (real server data) and merged in `allKots` below, so a failed
+  // fetch/cache-miss never wipes these out.
+  const [queuedKots, setQueuedKots] = useState([]);
   const [activeSectionId, setActiveSectionId] = useState("ALL");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -54,40 +71,62 @@ export default function KitchenDisplayScreen() {
     }
   }, []);
 
+  const loadQueued = useCallback(async () => {
+    setQueuedKots(await getQueuedKots());
+  }, []);
+
   const refreshPendingIds = useCallback(async () => {
     setPendingKotIds(await getPendingKotIds());
   }, []);
 
   useEffect(() => {
     load();
+    loadQueued();
     refreshPendingIds();
     const id = setInterval(load, POLL_INTERVAL_MS);
     // Re-check which tickets have a queued update whenever the KDS queue
     // changes (a tap queues one, a sync clears one) — independent of the
     // 8s poll, so the badge disappears the moment a sync actually succeeds.
-    const unsubscribe = subscribeToKdsQueue(refreshPendingIds);
+    const unsubscribeKds = subscribeToKdsQueue(refreshPendingIds);
+    // Re-read the offline outbox (AND re-fetch the server list) whenever
+    // it changes — an order enqueued (this device or another tab on it),
+    // synced, or retried. Both, not just loadQueued: once an order syncs,
+    // its "Awaiting sync" placeholder needs to disappear (loadQueued) AND
+    // the real ticket needs to appear right away (load) instead of
+    // waiting up to POLL_INTERVAL_MS for the next scheduled poll.
+    const unsubscribeOrders = subscribeToQueue(() => {
+      load();
+      loadQueued();
+    });
     return () => {
       clearInterval(id);
-      unsubscribe();
+      unsubscribeKds();
+      unsubscribeOrders();
     };
-  }, [load, refreshPendingIds]);
+  }, [load, loadQueued, refreshPendingIds]);
+
+  // Combine server-confirmed tickets with still-queued (offline) ones.
+  // Concatenation order here doesn't matter — the Pending/Ready/Served +
+  // createdAt sort in visibleKots below re-orders everything anyway, so a
+  // queued ticket lands wherever its timestamp actually puts it.
+  const allKots = useMemo(() => [...queuedKots, ...kots], [queuedKots, kots]);
 
   // Sections are derived from whatever's actually on the board right now —
   // no separate kitchen-sections endpoint needed for this screen.
   const sections = useMemo(() => {
     const map = new Map();
-    for (const kot of kots) {
+    for (const kot of allKots) {
       if (kot.kitchenSection)
         map.set(kot.kitchenSection.id, kot.kitchenSection.name);
     }
     return Array.from(map, ([id, name]) => ({ id, name }));
-  }, [kots]);
+  }, [allKots]);
 
   const visibleKots = useMemo(() => {
     const filtered =
       activeSectionId === "ALL"
-        ? kots
-        : kots.filter((k) => k.kitchenSectionId === activeSectionId);
+        ? allKots
+        : allKots.filter((k) => k.kitchenSectionId === activeSectionId);
 
     return filtered.slice().sort((a, b) => {
       // Pending -> Ready -> Served
@@ -111,15 +150,30 @@ export default function KitchenDisplayScreen() {
       // Pending & Ready: oldest first
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
-  }, [kots, activeSectionId]);
+  }, [allKots, activeSectionId]);
 
-  async function handleAdvance(id, nextStatus) {
-    setUpdatingId(id);
+  async function handleAdvance(kot, nextStatus) {
+    // Queued/not-yet-synced tickets (awaitingCreate) don't exist on the
+    // server yet — there's no real kotId to PATCH. Advance the status
+    // LOCALLY instead (see advanceQueuedKotStatus in offlineQueue.js) so
+    // Ready/Served genuinely work while still offline; it's replayed onto
+    // the real KOT automatically once the underlying order syncs.
+    if (kot.awaitingCreate) {
+      await advanceQueuedKotStatus(
+        kot.clientRequestId,
+        kot.kitchenSectionId,
+        nextStatus,
+      );
+      await loadQueued();
+      return;
+    }
+
+    setUpdatingId(kot.id);
     try {
       // updateKotStatusOffline tries the network first, and only falls
       // back to the local queue (+ an optimistic cache patch) on a
       // genuine connectivity failure — see kdsQueue.js.
-      await updateKotStatusOffline(id, nextStatus);
+      await updateKotStatusOffline(kot.id, nextStatus);
       await load();
       await refreshPendingIds();
     } catch (err) {
@@ -175,8 +229,8 @@ export default function KitchenDisplayScreen() {
         {isOffline && (
           <div className="mt-2 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
             <WifiOff className="h-3.5 w-3.5" />
-            Offline — showing last-synced tickets. Status updates will sync
-            automatically once back online.
+            Offline — showing last-synced tickets plus any new orders placed on
+            this device. Everything syncs automatically once back online.
           </div>
         )}
       </header>
@@ -223,9 +277,12 @@ export default function KitchenDisplayScreen() {
                 key={kot.id}
                 kot={kot}
                 onAdvance={handleAdvance}
-                onAddNote={canAddNotes ? handleAddNote : undefined}
+                onAddNote={
+                  canAddNotes && !kot.awaitingCreate ? handleAddNote : undefined
+                }
                 updating={updatingId === kot.id}
                 pendingSync={pendingKotIds.has(kot.id)}
+                awaitingCreate={kot.awaitingCreate}
               />
             ))}
           </div>

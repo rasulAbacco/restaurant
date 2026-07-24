@@ -40,6 +40,70 @@ export async function fetchWithOfflineFallback(key, fetchFn) {
   }
 }
 
+// FEATURE: keep the cached TABLE BOARD in sync with orders placed while
+// offline. Without this, a dine-in order queued in offlineQueue.js still
+// left the table showing FREE in every cached board (TableStrip.jsx's
+// `tables:<floorId>` cache AND OrdersPage.jsx's `orders:tables-board`
+// cache) until the order actually synced — so staff could tap the same
+// "FREE" table again and accidentally queue a second, duplicate order,
+// and the Orders/Tables page wouldn't show the table as occupied at all.
+//
+// getTablesBoard's response shape doesn't include which floor each table
+// belongs to (see tables.service.js), so rather than guess the one
+// `tables:<floorId>` key that has this table, this patches EVERY cached
+// key that looks like a table board and happens to contain this table id
+// — a no-op for any key that doesn't.
+export async function patchCachedTableAfterOfflineOrder(tableId, orderPreview) {
+  const db = await getDb();
+  const allKeys = await db.getAllKeys("referenceCache");
+  const boardKeys = allKeys.filter(
+    (key) => key === "orders:tables-board" || key.startsWith("tables:"),
+  );
+
+  for (const key of boardKeys) {
+    const row = await db.get("referenceCache", key);
+    if (!row || !Array.isArray(row.data)) continue;
+    const idx = row.data.findIndex((t) => t.id === tableId);
+    if (idx === -1) continue; // this cached board doesn't include this table — skip
+
+    const updated = row.data.slice();
+    updated[idx] = {
+      ...updated[idx],
+      status: "OCCUPIED",
+      order: orderPreview,
+    };
+    await db.put("referenceCache", { ...row, data: updated });
+  }
+}
+
+// Companion to patchCachedTableAfterOfflineOrder above — used when a
+// queued order's local KOT status advances (Ready/Served tapped on an
+// "Awaiting sync" ticket, see advanceQueuedKotStatus in offlineQueue.js)
+// so the Orders/Tables board's Pending/Serving badge updates too, not
+// just the Kitchen Display. Only touches `order.kitchenStatus`, leaving
+// everything else (status, itemCount, etc.) exactly as it was.
+export async function patchCachedTableKitchenStatus(tableId, kitchenStatus) {
+  const db = await getDb();
+  const allKeys = await db.getAllKeys("referenceCache");
+  const boardKeys = allKeys.filter(
+    (key) => key === "orders:tables-board" || key.startsWith("tables:"),
+  );
+
+  for (const key of boardKeys) {
+    const row = await db.get("referenceCache", key);
+    if (!row || !Array.isArray(row.data)) continue;
+    const idx = row.data.findIndex((t) => t.id === tableId);
+    if (idx === -1 || !row.data[idx].order) continue;
+
+    const updated = row.data.slice();
+    updated[idx] = {
+      ...updated[idx],
+      order: { ...updated[idx].order, kitchenStatus },
+    };
+    await db.put("referenceCache", { ...row, data: updated });
+  }
+}
+
 // FEATURE: offline read-only browsing for the Menu admin pages
 // (Categories/SubCategories/AddOns/Combos/KitchenSections/MenuList).
 // Those pages use menuApi.js, which returns { ok, data } and never
